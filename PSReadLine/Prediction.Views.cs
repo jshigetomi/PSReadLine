@@ -89,7 +89,7 @@ namespace Microsoft.PowerShell
             /// </summary>
             protected string GetOneHistorySuggestion(string text)
             {
-                var history = _singleton._history;
+                var history = HistoryState._history;
                 var comparison = _singleton._options.HistoryStringComparison;
 
                 for (int index = history.Count - 1; index >= 0; index--)
@@ -121,7 +121,7 @@ namespace Microsoft.PowerShell
                 List<SuggestionEntry> results = null;
                 int remainingCount = count;
 
-                var history = _singleton._history;
+                var history = HistoryState._history;
                 var comparison = _singleton._options.HistoryStringComparison;
                 var comparer = _singleton._options.HistoryStringComparer;
 

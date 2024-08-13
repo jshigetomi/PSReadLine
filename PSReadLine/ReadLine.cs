@@ -19,6 +19,7 @@ using System.Threading;
 using Microsoft.PowerShell.Commands;
 using Microsoft.PowerShell.Internal;
 using Microsoft.PowerShell.PSReadLine;
+using Microsoft.PowerShell.PSReadLine.History;
 
 [module: SuppressMessage("Microsoft.Design", "CA1014:MarkAssembliesWithClsCompliant")]
 [module: SuppressMessage("Microsoft.Design", "CA1026:DefaultParametersShouldNotBeUsed")]
@@ -266,7 +267,7 @@ namespace Microsoft.PowerShell
                 {
                     _singleton.SaveHistoryAtExit();
                 }
-                _singleton._historyFileMutex.Dispose();
+                HistoryState._historyFileMutex.Dispose();
 
                 throw new OperationCanceledException();
             }
@@ -278,7 +279,7 @@ namespace Microsoft.PowerShell
                 // exception so we can return an empty string.
                 _singleton._queuedKeys.Dequeue();
                 _singleton.SaveCurrentLine();
-                _singleton._getNextHistoryIndex = _singleton._history.Count;
+                HistoryState._getNextHistoryIndex = HistoryState._history.Count;
                 _singleton._current = 0;
                 _singleton._buffer.Clear();
                 _singleton.Render();
@@ -488,9 +489,9 @@ namespace Microsoft.PowerShell
                 var killCommandCount = _killCommandCount;
                 var yankCommandCount = _yankCommandCount;
                 var tabCommandCount = _tabCommandCount;
-                var searchHistoryCommandCount = _searchHistoryCommandCount;
-                var recallHistoryCommandCount = _recallHistoryCommandCount;
-                var anyHistoryCommandCount = _anyHistoryCommandCount;
+                var searchHistoryCommandCount = HistoryState._searchHistoryCommandCount;
+                var recallHistoryCommandCount = HistoryState._recallHistoryCommandCount;
+                var anyHistoryCommandCount = HistoryState._anyHistoryCommandCount;
                 var yankLastArgCommandCount = _yankLastArgCommandCount;
                 var visualSelectionCommandCount = _visualSelectionCommandCount;
                 var moveToLineCommandCount = _moveToLineCommandCount;
@@ -533,30 +534,30 @@ namespace Microsoft.PowerShell
                     _tabCommandCount = 0;
                     _tabCompletions = null;
                 }
-                if (searchHistoryCommandCount == _searchHistoryCommandCount)
+                if (searchHistoryCommandCount == HistoryState._searchHistoryCommandCount)
                 {
-                    if (_searchHistoryCommandCount > 0)
+                    if (HistoryState._searchHistoryCommandCount > 0)
                     {
                         _emphasisStart = -1;
                         _emphasisLength = 0;
                         RenderWithPredictionQueryPaused();
                     }
-                    _searchHistoryCommandCount = 0;
-                    _searchHistoryPrefix = null;
+                    HistoryState._searchHistoryCommandCount = 0;
+                    HistoryState._searchHistoryPrefix = null;
                 }
-                if (recallHistoryCommandCount == _recallHistoryCommandCount)
+                if (recallHistoryCommandCount == HistoryState._recallHistoryCommandCount)
                 {
-                    _recallHistoryCommandCount = 0;
+                    HistoryState._recallHistoryCommandCount = 0;
                 }
-                if (anyHistoryCommandCount == _anyHistoryCommandCount)
+                if (anyHistoryCommandCount == HistoryState._anyHistoryCommandCount)
                 {
-                    if (_anyHistoryCommandCount > 0)
+                    if (HistoryState._anyHistoryCommandCount > 0)
                     {
                         ClearSavedCurrentLine();
-                        _hashedHistory = null;
-                        _currentHistoryIndex = _history.Count;
+                        HistoryState._hashedHistory = null;
+                        HistoryState._currentHistoryIndex = HistoryState._history.Count;
                     }
-                    _anyHistoryCommandCount = 0;
+                    HistoryState._anyHistoryCommandCount = 0;
                 }
                 if (visualSelectionCommandCount == _visualSelectionCommandCount && _visualSelectionCommandCount > 0)
                 {
@@ -663,7 +664,6 @@ namespace Microsoft.PowerShell
 
             _buffer = new StringBuilder(8 * 1024);
             _statusBuffer = new StringBuilder(256);
-            _savedCurrentLine = new HistoryItem();
             _queuedKeys = new Queue<PSKeyInfo>();
 
             string hostName = null;
@@ -686,6 +686,8 @@ namespace Microsoft.PowerShell
             _options = new PSConsoleReadLineOptions(hostName ?? DefaultName, usingLegacyConsole);
             _prediction = new Prediction(this);
             SetDefaultBindings(_options.EditMode);
+            _historyContext = new HistoryContext(new HistoryItem(), _options);
+            HistoryProxy.SetHistoryType(new TextHistory());
         }
 
         private void Initialize(Runspace runspace, EngineIntrinsics engineIntrinsics)
@@ -749,33 +751,33 @@ namespace Microsoft.PowerShell
             _yankCommandCount = 0;
             _yankLastArgCommandCount = 0;
             _tabCommandCount = 0;
-            _recallHistoryCommandCount = 0;
-            _anyHistoryCommandCount = 0;
+            HistoryState._recallHistoryCommandCount = 0;
+            HistoryState._anyHistoryCommandCount = 0;
             _visualSelectionCommandCount = 0;
-            _hashedHistory = null;
+            HistoryState._hashedHistory = null;
 
-            if (_getNextHistoryIndex > 0)
+            if (HistoryState._getNextHistoryIndex > 0)
             {
-                _currentHistoryIndex = _getNextHistoryIndex;
+                HistoryState._currentHistoryIndex = HistoryState._getNextHistoryIndex;
                 UpdateFromHistory(HistoryMoveCursor.ToEnd);
-                _getNextHistoryIndex = 0;
-                if (_searchHistoryCommandCount > 0)
+                HistoryState._getNextHistoryIndex = 0;
+                if (HistoryState._searchHistoryCommandCount > 0)
                 {
-                    _searchHistoryPrefix = "";
+                    HistoryState._searchHistoryPrefix = "";
                     if (Options.HistoryNoDuplicates)
                     {
-                        _hashedHistory = new Dictionary<string, int>();
+                        HistoryState._hashedHistory = new Dictionary<string, int>();
                     }
                 }
             }
             else
             {
-                _currentHistoryIndex = _history.Count;
-                _searchHistoryCommandCount = 0;
+                HistoryState._currentHistoryIndex = HistoryState._history.Count;
+                HistoryState._searchHistoryCommandCount = 0;
             }
-            if (_previousHistoryItem != null)
+            if (HistoryState._previousHistoryItem != null)
             {
-                _previousHistoryItem.ApproximateElapsedTime = DateTime.UtcNow - _previousHistoryItem.StartTime;
+                HistoryState._previousHistoryItem.ApproximateElapsedTime = DateTime.UtcNow - HistoryState._previousHistoryItem.StartTime;
             }
         }
 
@@ -827,11 +829,11 @@ namespace Microsoft.PowerShell
                 }
             }
 
-            _historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
+            HistoryState._historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
 
-            _history = new HistoryQueue<HistoryItem>(Options.MaximumHistoryCount);
-            _recentHistory = new HistoryQueue<string>(capacity: 5);
-            _currentHistoryIndex = 0;
+            HistoryState._history = new HistoryQueue<HistoryItem>(Options.MaximumHistoryCount);
+            HistoryState._recentHistory = new HistoryQueue<string>(capacity: 5);
+            HistoryState._currentHistoryIndex = 0;
 
             bool readHistoryFile = true;
             try

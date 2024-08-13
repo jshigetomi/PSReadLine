@@ -92,7 +92,7 @@ namespace Microsoft.PowerShell
 
             _singleton._buffer.Clear(); // Clear so we don't actually run the input
             _singleton._current = 0; // If Render is called, _current must be correct.
-            _singleton._currentHistoryIndex = _singleton._history.Count;
+            HistoryState._currentHistoryIndex = HistoryState._history.Count;
             _singleton._inputAccepted = true;
         }
 
@@ -559,9 +559,9 @@ namespace Microsoft.PowerShell
         {
             if (_singleton.AcceptLineImpl(false))
             {
-                if (_singleton._currentHistoryIndex < (_singleton._history.Count - 1))
+                if (HistoryState._currentHistoryIndex < (HistoryState._history.Count - 1))
                 {
-                    _singleton._getNextHistoryIndex = _singleton._currentHistoryIndex + 1;
+                    HistoryState._getNextHistoryIndex = HistoryState._currentHistoryIndex + 1;
                 }
                 else
                 {

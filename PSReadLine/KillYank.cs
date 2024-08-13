@@ -253,13 +253,13 @@ namespace Microsoft.PowerShell
 
         void YankArgImpl(YankLastArgState yankLastArgState)
         {
-            if (yankLastArgState.historyIndex < 0 || yankLastArgState.historyIndex >= _history.Count)
+            if (yankLastArgState.historyIndex < 0 || yankLastArgState.historyIndex >= HistoryState._history.Count)
             {
                 Ding();
                 return;
             }
 
-            var buffer = _history[yankLastArgState.historyIndex];
+            var buffer = HistoryState._history[yankLastArgState.historyIndex];
             Parser.ParseInput(buffer.CommandLine, out var tokens, out var unused);
 
             int arg = (yankLastArgState.argument < 0)
@@ -293,7 +293,7 @@ namespace Microsoft.PowerShell
             var yankLastArgState = new YankLastArgState
             {
                 argument = arg as int? ?? 1,
-                historyIndex = _singleton._currentHistoryIndex - 1,
+                historyIndex = HistoryState._currentHistoryIndex - 1,
             };
             _singleton.YankArgImpl(yankLastArgState);
         }
@@ -320,7 +320,7 @@ namespace Microsoft.PowerShell
                 {
                     argument = (int?) arg ?? -1,
                     historyIncrement = -1,
-                    historyIndex = _singleton._currentHistoryIndex - 1
+                    historyIndex = HistoryState._currentHistoryIndex - 1
                 };
 
                 _singleton.YankArgImpl(_singleton._yankLastArgState);
@@ -342,10 +342,10 @@ namespace Microsoft.PowerShell
                 Ding();
                 yankLastArgState.historyIndex = 0;
             }
-            else if (yankLastArgState.historyIndex >= _singleton._history.Count)
+            else if (yankLastArgState.historyIndex >= HistoryState._history.Count)
             {
                 Ding();
-                yankLastArgState.historyIndex = _singleton._history.Count - 1;
+                yankLastArgState.historyIndex = HistoryState._history.Count - 1;
             }
             else
             {

@@ -499,7 +499,7 @@ namespace Microsoft.PowerShell
             {
                 if (ActiveView.UsePlugin && !string.IsNullOrWhiteSpace(commandLine))
                 {
-                    _singleton._mockableMethods.OnCommandLineAccepted(_singleton._recentHistory.ToArray());
+                    _singleton._mockableMethods.OnCommandLineAccepted(HistoryState._recentHistory.ToArray());
                 }
             }
 

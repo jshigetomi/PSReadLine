@@ -152,7 +152,7 @@ namespace Microsoft.PowerShell
             }
         }
 
-        internal abstract class EditItem
+        public abstract class EditItem
         {
             public Action<ConsoleKeyInfo?, object> _instigator;
             public object _instigatorArg;
@@ -193,7 +193,7 @@ namespace Microsoft.PowerShell
         }
 
         [DebuggerDisplay("Insert '{_insertedString}' ({_insertStartPosition})")]
-        class EditItemInsertString : EditItem
+        internal class EditItemInsertString : EditItem
         {
             // The string inserted tells us the length to delete on undo.
             // The contents of the string are only needed for redo.

@@ -45,19 +45,19 @@ namespace Microsoft.PowerShell
             if (options._maximumHistoryCount.HasValue)
             {
                 Options.MaximumHistoryCount = options.MaximumHistoryCount;
-                if (_history != null)
+                if (HistoryState._history != null)
                 {
                     var newHistory = new HistoryQueue<HistoryItem>(Options.MaximumHistoryCount);
-                    while (_history.Count > Options.MaximumHistoryCount)
+                    while (HistoryState._history.Count > Options.MaximumHistoryCount)
                     {
-                        _history.Dequeue();
+                        HistoryState._history.Dequeue();
                     }
-                    while (_history.Count > 0)
+                    while (HistoryState._history.Count > 0)
                     {
-                        newHistory.Enqueue(_history.Dequeue());
+                        newHistory.Enqueue(HistoryState._history.Dequeue());
                     }
-                    _history = newHistory;
-                    _currentHistoryIndex = _history.Count;
+                    HistoryState._history = newHistory;
+                    HistoryState._currentHistoryIndex = HistoryState._history.Count;
                 }
             }
             if (options._maximumKillRingCount.HasValue)
@@ -125,9 +125,9 @@ namespace Microsoft.PowerShell
             if (options.HistorySavePath != null)
             {
                 Options.HistorySavePath = options.HistorySavePath;
-                _historyFileMutex?.Dispose();
-                _historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
-                _historyFileLastSavedSize = 0;
+                HistoryState._historyFileMutex?.Dispose();
+                HistoryState._historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
+                HistoryState._historyFileLastSavedSize = 0;
             }
             if (options._ansiEscapeTimeout.HasValue)
             {
