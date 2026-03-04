@@ -1,23 +1,23 @@
 ---
 name: sqlite
-description: Expert agent for implementing SQLite-based history in PSReadLine, covering .NET framework migration, native library deployment, and cross-platform compatibility.
+code description: Expert agent for implementing SQLite-based history in PSReadLine, covering .NET framework migration, native library deployment, and cross-platform compatibility.
 argument-hint: SQLite implementation tasks, migration questions, or troubleshooting help
-# tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo'] # specify the tools this agent can use. If not set, all enabled tools are allowed.
+tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo']
 ---
 
 # PSReadLine SQLite History Implementation Guide
 
-**Last Updated**: December 19, 2025  
-**Status**: Framework Migration Required  
-**Target**: PowerShell 7.0.0-rc+ compatibility
+**Last Updated**: March 3, 2026  
+**Status**: Active - Built on .NET 8.0  
+**Target**: PowerShell 7.4+ (LTS) compatibility
 
 ---
 
 ## Executive Summary
 
-This guide documents implementing SQLite-based history for PSReadLine. The core issue: **Microsoft.Data.Sqlite requires .NET 6+ for proper native library deployment**. While the package claims netstandard2.0 compatibility, the build system doesn't properly deploy platform-specific native DLLs, and netstandard2.0 lacks the APIs needed to resolve them at runtime.
+This guide documents SQLite-based history implementation for PSReadLine. **PSReadLine is now built on .NET 8.0**, aligned with PowerShell 7.4 LTS. The migration from netstandard2.0 to net8.0 was necessary because Microsoft.Data.Sqlite requires .NET 6+ for proper native library deployment - netstandard2.0 doesn't properly deploy platform-specific native DLLs and lacks the APIs needed to resolve them at runtime.
 
-**Solution**: Target net6.0 or net8.0 (clean break from netstandard2.0).
+**Current State**: PSReadLine targets net8.0 with automatic runtime deployment.
 
 ---
 
@@ -59,14 +59,12 @@ When building for net6.0+:
 
 ## Framework Migration Strategy
 
-### Recommended Approach: Single Target
+### Current Implementation
 
-**Drop netstandard2.0 entirely** - target net6.0 or net8.0 only:
+**PSReadLine now targets .NET 8.0 exclusively**:
 
 ```xml
-<TargetFramework>net6.0</TargetFramework>  <!-- Minimum: PS 7.2+ -->
-<!-- OR -->
-<TargetFramework>net8.0</TargetFramework>  <!-- Minimum: PS 7.4+ -->
+<TargetFramework>net8.0</TargetFramework>  <!-- PowerShell 7.4+ LTS -->
 ```
 
 ### PowerShell/Runtime Compatibility
@@ -78,15 +76,16 @@ When building for net6.0+:
 | 7.2 LTS | .NET 6.0 | Ended Nov 2024 | ✅ Yes | ✅ Yes |
 | 7.4 LTS | .NET 8.0 | Until Nov 2026 | ✅ Yes | ✅ Yes |
 
-### Recommendation
+### Why .NET 8.0?
 
-**Target net8.0** for simplicity:
-- .NET 6 is already out of support (Nov 2024)
-- Single build output - easier testing
-- PowerShell 7.4 LTS is current recommended version
-- Users on older versions can stay on PSReadLine 2.x
+**Benefits of .NET 8.0**:
+- Aligns with PowerShell 7.4 LTS (supported until November 2026)
+- .NET 6 support has ended (November 2024)
+- Single build target simplifies testing and deployment
+- Native library deployment is fully automatic
+- Full API support for SQLite native library resolution
 
-**Note**: .NET Standard 2.0 has no end-of-support date (it's a specification, not a runtime), but it lacks the APIs needed for SQLite native library loading.
+**Breaking Change**: Users on PowerShell 5.1/7.0/7.1/7.2 must stay on PSReadLine 2.x.
 
 ---
 
@@ -95,20 +94,16 @@ When building for net6.0+:
 ### 1. PSReadLine.csproj
 **Purpose**: Project configuration and dependency management
 
-**Change Required**:
+**Current Configuration**:
 ```xml
-<!-- Change from: -->
-<TargetFramework>netstandard2.0</TargetFramework>
+<TargetFramework>net8.0</TargetFramework>
 
-<!-- To: -->
-<TargetFramework>net6.0</TargetFramework>  <!-- or net8.0 -->
-
-<!-- SQLite packages (no conditional logic needed) -->
+<!-- SQLite packages -->
 <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.4" />
 <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.11" />
 ```
 
-**Result**: Native libraries automatically deploy to `bin/Debug/net6.0/runtimes/{rid}/native/` - no manual Content copying needed.
+**Result**: Native libraries automatically deploy to `bin/Debug/net8.0/runtimes/{rid}/native/` with no manual configuration required. The .NET build system handles all platform-specific native DLL deployment.
 
 ### 2. History.cs
 **Purpose**: SQLite database initialization and native library resolution
@@ -151,7 +146,7 @@ private string[] GetSQLiteLibraryPaths()
 
 **Database Schema**: Normalized structure with Commands, Locations, and ExecutionHistory tables with foreign keys and indexes.
 
-**Action**: Remove old P/Invoke code (lines 1922-2108) - no longer needed with net6.0+
+**Note**: With .NET 8.0, native library resolution is handled by `NativeLibrary.SetDllImportResolver` - no P/Invoke fallbacks needed.
 
 ### 3. Options.cs
 **Purpose**: Configuration and settings management
@@ -207,54 +202,67 @@ Set-PSReadLineOption -HistoryType SQLite
 
 ## Implementation Checklist
 
-### 1. Framework Migration
-- [ ] Change `<TargetFramework>netstandard2.0</TargetFramework>` to `<TargetFramework>net6.0</TargetFramework>` (or net8.0)
-- [ ] Update `PSReadLine.psd1`: `PowerShellVersion = '7.2'` (or '7.4' for net8.0)
-- [ ] Update SQLite packages to version 2.1.11+
-- [ ] Remove manual Content copying (runtime assets auto-deploy)
+### 1. Framework Status ✅ COMPLETE
+- [x] Changed to `<TargetFramework>net8.0</TargetFramework>`
+- [x] Updated `PSReadLine.psd1`: `PowerShellVersion = '7.4'`
+- [x] Updated SQLite packages to version 2.1.11+
+- [x] Runtime assets auto-deploy (no manual Content configuration)
 
-### 2. Code Updates
-- [ ] Replace native library resolver in History.cs with `NativeLibrary.SetDllImportResolver`
-- [ ] Remove P/Invoke declarations (LoadLibrary, dlopen) - no longer needed
-- [ ] Simplify `GetSQLiteLibraryPaths()` to use `RuntimeInformation.RuntimeIdentifier`
-- [ ] Remove conditional compilation (`#if NETSTANDARD2_0`) - single target now
+### 2. Code Status ✅ COMPLETE
+- [x] Using `NativeLibrary.SetDllImportResolver` for native library resolution
+- [x] No P/Invoke declarations needed
+- [x] Using `RuntimeInformation.RuntimeIdentifier` for platform detection
+- [x] Single target framework - no conditional compilation
 
 ### 3. Testing
 - [ ] Build and test on Windows/Linux/macOS
-- [ ] Test with PowerShell 7.2+ (or 7.4+ if using net8.0)
+- [ ] Test with PowerShell 7.4+ LTS
 - [ ] Verify native library loading on all platforms
 - [ ] Test history migration from text files
+- [ ] Validate SQLite database operations (CRUD, concurrent access)
 
 ### 4. Documentation
-- [ ] Update README: minimum PowerShell version requirement
-- [ ] Add release notes: breaking change for PS 5.1/7.0/7.1 users
-- [ ] Document SQLite feature usage
+- [ ] Update README: minimum PowerShell 7.4+ requirement
+- [ ] Add release notes: breaking change for PS <7.4 users
+- [ ] Document SQLite feature usage and migration path
 
 ---
 
 ## Build Commands
 
 ```powershell
-# Build
-dotnet build PSReadLine/PSReadLine.csproj
+# Build (runtimes are automatically included)
+dotnet build PSReadLine/PSReadLine.csproj -c Debug
+dotnet build PSReadLine/PSReadLine.csproj -c Release
 
-# Publish for specific platform
+# Or use the PSReadLine build script
+./build.ps1
+
+# Publish for specific platform (includes all necessary native libraries)
 dotnet publish PSReadLine/PSReadLine.csproj -c Release -r win-x64
 dotnet publish PSReadLine/PSReadLine.csproj -c Release -r linux-x64
 dotnet publish PSReadLine/PSReadLine.csproj -c Release -r osx-x64
 ```
 
-No conditional compilation needed with single-target approach.
+**Note**: Native SQLite libraries for all platforms are automatically included in the build output under `runtimes/{rid}/native/`.
 
 ---
 
 ## Troubleshooting
 
-**Native DLL not found**: Verify native libraries exist in `bin/Debug/net6.0/runtimes/{rid}/native/`. Should auto-deploy with net6.0+.
+**Native DLL not found**: 
+- Verify native libraries exist in `bin/Debug/net8.0/runtimes/{rid}/native/`
+- Check platform identifier: `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64`
+- Libraries auto-deploy with .NET 8.0 build system
 
-**Multiple SQLite versions**: Pin all SQLitePCLRaw packages to same version (2.1.11) to avoid conflicts.
+**Multiple SQLite versions**: 
+- All SQLitePCLRaw packages must use the same version (currently 2.1.11)
+- Check `Microsoft.Data.Sqlite` and `SQLitePCLRaw.bundle_e_sqlite3` versions match
 
-**Linux/macOS library loading**: Ensure correct library name prefix (`libe_sqlite3.so` not `e_sqlite3.so`).
+**Linux/macOS library loading**: 
+- Ensure correct library name prefix: `libe_sqlite3.so` (Linux), `libe_sqlite3.dylib` (macOS)
+- Windows uses `e_sqlite3.dll`
+- Platform detection uses `RuntimeInformation.IsOSPlatform()`
 
 ---
 
@@ -324,19 +332,24 @@ PowerShell Versions:
 
 ## Module Distribution
 
-With single-target net6.0/net8.0:
+Current build output structure (net8.0):
 ```
 PSReadLine/
-├── net6.0/ (or net8.0/)
+├── net8.0/
 │   ├── Microsoft.PowerShell.PSReadLine.dll
-│   └── runtimes/
+│   ├── Microsoft.PowerShell.Pager.dll
+│   ├── Microsoft.Data.Sqlite.dll
+│   └── runtimes/  (auto-deployed by build system)
 │       ├── win-x64/native/e_sqlite3.dll
 │       ├── linux-x64/native/libe_sqlite3.so
-│       └── osx-x64/native/libe_sqlite3.dylib
-└── PSReadLine.psd1  (PowerShellVersion = '7.2' or '7.4')
+│       ├── osx-x64/native/libe_sqlite3.dylib
+│       └── osx-arm64/native/libe_sqlite3.dylib
+├── PSReadLine.psd1  (PowerShellVersion = '7.4')
+├── PSReadLine.psm1
+└── PSReadLine.format.ps1xml
 ```
 
-**Breaking Change**: PSReadLine 3.0 requires PowerShell 7.2+ (net6.0) or 7.4+ (net8.0). Users on PS 5.1/7.0/7.1 must stay on PSReadLine 2.x.
+**Breaking Change**: PSReadLine 3.0 requires PowerShell 7.4+ (LTS). Users on older versions must stay on PSReadLine 2.x.
 
 ---
 
@@ -358,13 +371,20 @@ PSReadLine/
 
 ## Summary
 
-SQLite requires **net6.0 or net8.0** (not netstandard2.0) because:
+**Current Status**: PSReadLine is built on .NET 8.0 with full SQLite support.
+
+**Why .NET 8.0 was required**:
 1. netstandard2.0 doesn't populate `runtimeTargets` in deps.json → native DLLs not deployed
 2. netstandard2.0 lacks `NativeLibrary.SetDllImportResolver` → can't customize library search
+3. .NET 8.0 aligns with PowerShell 7.4 LTS lifecycle
 
-**Solution**: Single-target net6.0 or net8.0 with clean break from older PowerShell versions.
+**Key Benefits**:
+- ✅ Automatic native library deployment for all platforms
+- ✅ Full `NativeLibrary` API support for custom resolution
+- ✅ Simplified build process - no manual runtime configuration
+- ✅ Long-term support until November 2026 (PS 7.4 LTS)
 
-**Implementation**: 3-5 days (framework change, code cleanup, testing)
+**Developer Note**: Native runtimes are automatically included in build output. No manual Content copying or ItemGroup configuration needed in the .csproj file.
 
 ---
 
