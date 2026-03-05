@@ -7,7 +7,7 @@ tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo']
 
 # PSReadLine SQLite History Implementation Guide
 
-**Last Updated**: March 3, 2026  
+**Last Updated**: March 5, 2026  
 **Status**: Active - Built on .NET 8.0  
 **Target**: PowerShell 7.4+ (LTS) compatibility
 
@@ -146,6 +146,11 @@ private string[] GetSQLiteLibraryPaths()
 
 **Database Schema**: Normalized structure with Commands, Locations, and ExecutionHistory tables with foreign keys and indexes.
 
+**Database Initialization**:
+- `InitializeSQLiteDatabase(bool migrateTextHistory = false)` — creates schema if new DB
+- `migrateTextHistory: true` only on initial Text → SQLite switch (not when relocating DB)
+- Migration reads from `_options.HistorySavePathText` directly (no path derivation hacks)
+
 **Note**: With .NET 8.0, native library resolution is handled by `NativeLibrary.SetDllImportResolver` - no P/Invoke fallbacks needed.
 
 ### 3. Options.cs
@@ -153,28 +158,71 @@ private string[] GetSQLiteLibraryPaths()
 
 **Key Methods**:
 - `SetOptionsInternal()`: Handles `HistoryType` switching between `Text` and `SQLite`
-- Lines 31-57: History type initialization logic
+- Lines 29-49: History type initialization — switches to SQLite, initializes DB, migrates text history
+- Lines 158-185: `HistorySavePathText` / `HistorySavePathSQLite` update handling
 
-**SQLite-Specific Settings**:
+**HistoryType Switching**:
 ```csharp
 if (options._historyTypeSpecified)
 {
     Options.HistoryType = options.HistoryType;
     if (Options.HistoryType is HistoryType.SQLite)
     {
-        InitializeSQLiteDatabase();
-        // Migrate existing text history to SQLite
-        if (!string.IsNullOrEmpty(Options.HistorySavePath) && 
-            !System.IO.File.Exists(Options.HistorySavePath))
+        // HistorySavePath is now computed from HistoryType, so it already
+        // points at HistorySavePathSQLite after the type switch above.
+        if (!string.IsNullOrEmpty(Options.HistorySavePath) && !System.IO.File.Exists(Options.HistorySavePath))
         {
-            MigrateTextHistoryToSQLite();
+            _historyFileMutex?.Dispose();
+            _historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
+            InitializeSQLiteDatabase(migrateTextHistory: true);
+            _historyFileLastSavedSize = 0;
         }
+        // Clear text history from memory and load SQLite history
+        _singleton._history?.Clear();
+        _singleton._currentHistoryIndex = 0;
+        ReadSQLiteHistory(fromOtherSession: false);
+    }
+}
+```
+
+**Path Update Handling**:
+```csharp
+// When user sets -HistorySavePathText
+if (options.HistorySavePathText != null)
+{
+    Options.HistorySavePathText = options.HistorySavePathText;
+    // If currently in Text mode, reset the mutex for the new active path.
+    if (Options.HistoryType is HistoryType.Text)
+    {
+        _historyFileMutex?.Dispose();
+        _historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
+        _historyFileLastSavedSize = 0;
+    }
+}
+
+// When user sets -HistorySavePathSQLite
+if (options.HistorySavePathSQLite != null)
+{
+    Options.HistorySavePathSQLite = options.HistorySavePathSQLite;
+    // If currently in SQLite mode, reconnect to the new database.
+    if (Options.HistoryType is HistoryType.SQLite)
+    {
+        _historyFileMutex?.Dispose();
+        _historyFileMutex = new Mutex(false, GetHistorySaveFileMutexName());
+        _historyFileLastSavedSize = 0;
+        if (!System.IO.File.Exists(Options.HistorySavePath))
+        {
+            InitializeSQLiteDatabase();
+        }
+        _singleton._history?.Clear();
+        _singleton._currentHistoryIndex = 0;
+        ReadSQLiteHistory(fromOtherSession: false);
     }
 }
 ```
 
 ### 4. Cmdlets.cs
-**Purpose**: Public API enumerations and cmdlet definitions
+**Purpose**: Public API enumerations, cmdlet definitions, and history path configuration
 
 **Key Enumerations**:
 ```csharp
@@ -193,9 +241,62 @@ public enum AddToHistoryOption
 }
 ```
 
+**History Path Properties** (`PSConsoleReadLineOptions`):
+```csharp
+/// <summary>
+/// The path to the text history file.
+/// </summary>
+public string HistorySavePathText { get; set; }
+
+/// <summary>
+/// The path to the SQLite history database.
+/// </summary>
+public string HistorySavePathSQLite { get; set; }
+
+/// <summary>
+/// Returns the active history save path based on the current HistoryType.
+/// </summary>
+public string HistorySavePath => HistoryType switch
+{
+    HistoryType.SQLite => HistorySavePathSQLite,
+    _ => HistorySavePathText,
+};
+```
+
+**Design**: `HistorySavePath` is a computed read-only property. All internal code uses `HistorySavePath` transparently — it automatically resolves to the correct stored path based on `HistoryType`. Users configure each path independently via `HistorySavePathText` and `HistorySavePathSQLite`.
+
+**Cmdlet Parameters** (`SetPSReadLineOption`):
+```csharp
+[Parameter]
+[ValidateNotNullOrEmpty]
+public string HistorySavePathText { get; set; }  // Sets the text file location
+
+[Parameter]
+[ValidateNotNullOrEmpty]
+public string HistorySavePathSQLite { get; set; }  // Sets the SQLite DB location
+```
+
+**Default Paths** (set during initialization for all platforms):
+- **Windows**: `%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\{host}_history.txt` / `.db`
+- **Linux/macOS (XDG)**: `$XDG_DATA_HOME/powershell/PSReadLine/{host}_history.txt` / `.db`
+- **Linux/macOS (HOME)**: `~/.local/share/powershell/PSReadLine/{host}_history.txt` / `.db`
+- **Fallback**: `/dev/null` for both
+
 **Usage**:
 ```powershell
+# Switch to SQLite
 Set-PSReadLineOption -HistoryType SQLite
+
+# Customize paths independently
+Set-PSReadLineOption -HistorySavePathText "C:\MyHistory\history.txt"
+Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
+
+# Check active path (computed from HistoryType)
+(Get-PSReadLineOption).HistorySavePath
+
+# Check both stored paths
+(Get-PSReadLineOption).HistorySavePathText
+(Get-PSReadLineOption).HistorySavePathSQLite
 ```
 
 ---
@@ -356,9 +457,18 @@ PSReadLine/
 ## Contact & Resources
 
 ### Internal Documentation
-- `History.cs`: Database implementation (lines 141-700)
-- `Options.cs`: Configuration management (lines 31-57)
-- `Cmdlets.cs`: Public API definitions (lines 64-70)
+- `History.cs`: Database implementation, migration, incremental read/write
+  - `InitializeSQLiteDatabase(bool migrateTextHistory)`: Schema creation (lines 212-308)
+  - `MigrateTextHistoryToSQLite()`: Reads from `HistorySavePathText` directly (lines 310-400)
+  - `WriteHistoryToSQLite()`: Incremental writes with normalized tables (lines 580-650)
+  - `ReadSQLiteHistory()`: Full history load (lines 888-960)
+  - `ReadHistorySQLiteIncrementally()`: Cross-session incremental reads (lines 790-860)
+- `Options.cs`: Configuration management
+  - `SetOptionsInternal()`: HistoryType switching (lines 29-49), path updates (lines 158-185)
+- `Cmdlets.cs`: Public API definitions
+  - `PSConsoleReadLineOptions`: `HistorySavePathText`, `HistorySavePathSQLite`, computed `HistorySavePath` (lines 407-425)
+  - `SetPSReadLineOption`: `-HistorySavePathText`, `-HistorySavePathSQLite` parameters (lines 850-873)
+  - Default path initialization for all platforms (lines 240-310)
 - `PSReadLine.csproj`: Build configuration
 
 ### External Resources
