@@ -2,12 +2,12 @@
 name: sqlite
 code description: Expert agent for implementing SQLite-based history in PSReadLine, covering .NET framework migration, native library deployment, and cross-platform compatibility.
 argument-hint: SQLite implementation tasks, migration questions, or troubleshooting help
-tools: ['vscode', 'execute', 'read', 'agent', 'edit', 'search', 'web', 'todo']
+tools: [vscode, execute, read, agent, edit, search, web, browser, todo]
 ---
 
 # PSReadLine SQLite History Implementation Guide
 
-**Last Updated**: March 5, 2026  
+**Last Updated**: March 23, 2026  
 **Status**: Active - Built on .NET 8.0  
 **Target**: PowerShell 7.4+ (LTS) compatibility
 
@@ -103,7 +103,7 @@ When building for net6.0+:
 <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.11" />
 ```
 
-**Result**: Native libraries automatically deploy to `bin/Debug/net8.0/runtimes/{rid}/native/` with no manual configuration required. The .NET build system handles all platform-specific native DLL deployment.
+**Result**: Native libraries deploy to `bin/Debug/net8.0/runtimes/{rid}/native/` during build. The build script (`PSReadLine.build.ps1`) then restructures these into the flat `{rid}/` layout that PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler` expects.
 
 ### 2. History.cs
 **Purpose**: SQLite database initialization and native library resolution
@@ -332,29 +332,40 @@ Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
 ## Build Commands
 
 ```powershell
-# Build (runtimes are automatically included)
-dotnet build PSReadLine/PSReadLine.csproj -c Debug
-dotnet build PSReadLine/PSReadLine.csproj -c Release
-
-# Or use the PSReadLine build script
+# Build and publish (build script handles native DLL restructuring)
 ./build.ps1
 
-# Publish for specific platform (includes all necessary native libraries)
-dotnet publish PSReadLine/PSReadLine.csproj -c Release -r win-x64
-dotnet publish PSReadLine/PSReadLine.csproj -c Release -r linux-x64
-dotnet publish PSReadLine/PSReadLine.csproj -c Release -r osx-x64
+# Or build manually (runtimes/ stays in NuGet layout — no restructuring)
+dotnet build PSReadLine/PSReadLine.csproj -c Debug
+dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 ```
 
-**Note**: Native SQLite libraries for all platforms are automatically included in the build output under `runtimes/{rid}/native/`.
+**Note**: `dotnet build`/`publish` produces the NuGet `runtimes/{rid}/native/` layout. The `BuildMainModule` task in `PSReadLine.build.ps1` restructures this into the flat `{rid}/` layout after publish. If building manually, the native DLLs will be in `runtimes/` and won't be found by PowerShell's ALC.
 
 ---
 
 ## Troubleshooting
 
-**Native DLL not found**: 
-- Verify native libraries exist in `bin/Debug/net8.0/runtimes/{rid}/native/`
-- Check platform identifier: `win-x64`, `linux-x64`, `osx-x64`, `osx-arm64`
-- Libraries auto-deploy with .NET 8.0 build system
+**Native DLL not found**:
+- PSReadLine's `deps.json` is NOT read by the .NET host — only `pwsh.deps.json` is processed at startup
+- Native library resolution for modules happens via PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler`
+- This handler probes `{moduleDir}/{rid}/{libraryName}` (flat layout), NOT `runtimes/{rid}/native/`
+- Verify native libraries exist in flat `{rid}/` folders: e.g., `bin/Debug/net8.0/win-x64/e_sqlite3.dll`
+- If `runtimes/` exists but `win-x64/` etc. don't, the build script restructuring didn't run
+- Use `(Get-Process -Id $PID).Modules | Where-Object ModuleName -match 'sqlite'` to see what actually loaded
+- A random `e_sqlite3.dll` on PATH (from other tools) can mask the real problem
+
+**How native resolution actually works for modules**:
+1. `COREHOST_TRACE` only shows `pwsh.deps.json` processing — module deps.json is never read at the native host layer
+2. PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler` resolves native DLLs for modules
+3. It builds: `Path.Combine(assemblyDir, runtimeIdentifier, libraryName) + extension`
+4. e.g., `{moduleDir}/win-x64/e_sqlite3.dll`
+5. If that fails, the OS default search (PATH, system dirs) is tried as a last resort
+
+**deps.json runtimeTargets are dead data for modules**:
+- PSReadLine's `deps.json` correctly lists `runtimes/win-x64/native/e_sqlite3.dll` in `runtimeTargets`
+- But this is ONLY used when the app's `deps.json` is read (i.e., for standalone apps)
+- For PowerShell modules, this data is never consumed — confirmed via COREHOST_TRACE analysis
 
 **Multiple SQLite versions**: 
 - All SQLitePCLRaw packages must use the same version (currently 2.1.11)
@@ -363,7 +374,11 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Release -r osx-x64
 **Linux/macOS library loading**: 
 - Ensure correct library name prefix: `libe_sqlite3.so` (Linux), `libe_sqlite3.dylib` (macOS)
 - Windows uses `e_sqlite3.dll`
-- Platform detection uses `RuntimeInformation.IsOSPlatform()`
+- Alpine Linux uses `linux-musl-x64` or `linux-musl-arm64` RIDs
+
+**winsqlite3 fallback**:
+- If `SQLitePCLRaw.provider.winsqlite3.dll` is in the build output, SQLitePCLRaw may use Windows' built-in `C:\WINDOWS\SYSTEM32\winsqlite3.DLL` instead of `e_sqlite3`
+- This works on Windows but is not the intended provider — verify with `Get-Process` modules output
 
 ---
 
@@ -433,22 +448,84 @@ PowerShell Versions:
 
 ## Module Distribution
 
-Current build output structure (net8.0):
+### Native Library Resolution Architecture
+
+PowerShell modules with native dependencies face a unique challenge: the module's `deps.json` is **not read** by the .NET native host layer. Only `pwsh.deps.json` is processed during startup. Native library resolution for modules happens entirely through PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler`, which expects a **flat `{rid}/` layout**:
+
+```csharp
+// From CorePsAssemblyLoadContext.cs in PowerShell
+internal static IntPtr NativeDllHandler(Assembly assembly, string libraryName)
+{
+    string folder = Path.GetDirectoryName(assembly.Location);
+    string fullName = Path.Combine(folder, s_nativeDllSubFolder, libraryName) + s_nativeDllExtension;
+    return NativeLibrary.TryLoad(fullName, out IntPtr pointer) ? pointer : IntPtr.Zero;
+}
+```
+
+This means:
+- NuGet convention (`runtimes/{rid}/native/`) does NOT work for PowerShell modules
+- PowerShell convention (`{rid}/{libraryName}`) is required
+- The build script must restructure the output after `dotnet publish`
+
+### Build Output Structure
+
+After `dotnet publish`, the build script (`PSReadLine.build.ps1`) restructures:
+```
+runtimes/win-x64/native/e_sqlite3.dll  →  win-x64/e_sqlite3.dll
+runtimes/linux-x64/native/libe_sqlite3.so  →  linux-x64/libe_sqlite3.so
+```
+
+Final module layout:
 ```
 PSReadLine/
-├── net8.0/
-│   ├── Microsoft.PowerShell.PSReadLine.dll
-│   ├── Microsoft.PowerShell.Pager.dll
-│   ├── Microsoft.Data.Sqlite.dll
-│   └── runtimes/  (auto-deployed by build system)
-│       ├── win-x64/native/e_sqlite3.dll
-│       ├── linux-x64/native/libe_sqlite3.so
-│       ├── osx-x64/native/libe_sqlite3.dylib
-│       └── osx-arm64/native/libe_sqlite3.dylib
+├── Microsoft.PowerShell.PSReadLine.dll
+├── Microsoft.PowerShell.Pager.dll
+├── Microsoft.Data.Sqlite.dll
+├── SQLitePCLRaw.core.dll
+├── SQLitePCLRaw.batteries_v2.dll
+├── SQLitePCLRaw.provider.e_sqlite3.dll
 ├── PSReadLine.psd1  (PowerShellVersion = '7.4')
 ├── PSReadLine.psm1
-└── PSReadLine.format.ps1xml
+├── PSReadLine.format.ps1xml
+├── win-x64/
+│   └── e_sqlite3.dll
+├── win-arm64/
+│   └── e_sqlite3.dll
+├── linux-x64/
+│   └── libe_sqlite3.so
+├── linux-arm64/
+│   └── libe_sqlite3.so
+├── linux-musl-x64/
+│   └── libe_sqlite3.so
+├── linux-musl-arm64/
+│   └── libe_sqlite3.so
+├── osx-x64/
+│   └── libe_sqlite3.dylib
+└── osx-arm64/
+    └── libe_sqlite3.dylib
 ```
+
+### Supported RIDs
+
+| Platform | RID | PowerShell ships on |
+|----------|-----|:---:|
+| Windows x64 | `win-x64` | Yes |
+| Windows ARM64 | `win-arm64` | Yes |
+| Linux x64 | `linux-x64` | Yes |
+| Linux ARM | `linux-arm` | Yes |
+| Linux ARM64 | `linux-arm64` | Yes |
+| Alpine x64 | `linux-musl-x64` | Yes |
+| Alpine ARM64 | `linux-musl-arm64` | Yes |
+| macOS x64 | `osx-x64` | Yes |
+| macOS ARM64 | `osx-arm64` | Yes |
+
+### Future Improvements
+
+Three complementary approaches to fix native library resolution for the PowerShell ecosystem:
+
+1. **PowerShell engine fix** (recommended): Add `runtimes/{rid}/native/` as a fallback probe path in `NativeDllHandler`. ~5 line change, benefits all modules.
+2. **PSResourceGet restructuring**: Handle `runtimes/` → `{rid}/` layout transformation during `Install-PSResource`. Benefits all installed modules.
+3. **Module-shipped resolver**: PSReadLine can ship its own `NativeLibrary.SetDllImportResolver` as belt-and-suspenders for older PowerShell versions.
 
 **Breaking Change**: PSReadLine 3.0 requires PowerShell 7.4+ (LTS). Users on older versions must stay on PSReadLine 2.x.
 
@@ -488,13 +565,14 @@ PSReadLine/
 2. netstandard2.0 lacks `NativeLibrary.SetDllImportResolver` → can't customize library search
 3. .NET 8.0 aligns with PowerShell 7.4 LTS lifecycle
 
-**Key Benefits**:
-- ✅ Automatic native library deployment for all platforms
-- ✅ Full `NativeLibrary` API support for custom resolution
-- ✅ Simplified build process - no manual runtime configuration
-- ✅ Long-term support until November 2026 (PS 7.4 LTS)
+**Key findings from native library investigation (March 2026)**:
+- Module `deps.json` `runtimeTargets` are **not consumed** by the .NET host for PowerShell modules (confirmed via `COREHOST_TRACE`)
+- Only `pwsh.deps.json` is read at startup; module loading is handled by `CorePsAssemblyLoadContext`
+- PowerShell's `NativeDllHandler` expects flat `{rid}/{libraryName}` layout, not NuGet's `runtimes/{rid}/native/`
+- Build script restructures NuGet output into PowerShell-compatible layout after `dotnet publish`
+- The NuGet `runtimes/` convention has existed since 2016; PowerShell's flat convention since 2018 — they were never aligned
 
-**Developer Note**: Native runtimes are automatically included in build output. No manual Content copying or ItemGroup configuration needed in the .csproj file.
+**Developer Note**: Always use `./build.ps1` to get the correct module layout. Manual `dotnet build` output will have native DLLs in `runtimes/` which PowerShell cannot find.
 
 ---
 
