@@ -7,7 +7,7 @@ tools: [vscode, execute, read, agent, edit, search, web, browser, todo]
 
 # PSReadLine SQLite History Implementation Guide
 
-**Last Updated**: March 23, 2026  
+**Last Updated**: April 9, 2026  
 **Status**: Active - Built on .NET 8.0  
 **Target**: PowerShell 7.4+ (LTS) compatibility
 
@@ -145,6 +145,17 @@ private string[] GetSQLiteLibraryPaths()
 ```
 
 **Database Schema**: Normalized structure with Commands, Locations, and ExecutionHistory tables with foreign keys and indexes.
+
+**History Recall Ordering** (decided April 2026):
+- `ReadSQLiteHistory()` loads history **chronologically** (`LastExecuted DESC`) with **per-CommandLine deduplication** via `ROW_NUMBER() OVER (PARTITION BY CommandLine ORDER BY LastExecuted DESC)`. This ensures basic Up/Down recall is simple reverse-chronological with no duplicates.
+- `LocationHistoryRecall()` builds a **weighted sorted index** on first press: filtered to current location, then sorted by `ExecutionCount DESC` (frequency), then by position DESC (recency). This makes frequently-used commands at the current directory surface first.
+- `HistoryRecall()` relies on `HistoryNoDuplicates` option for in-memory dedup (the SQL already deduplicates DB-loaded entries).
+
+**History Deletion** (April 2026):
+- **Alt+Delete** (`RemoveFromHistory`): Default binding in both Windows and Emacs modes. While browsing history with Up/Down, removes the currently displayed entry from in-memory history and the SQLite database (if using SQLite mode). Also works in the F2 prediction list view.
+- `RemoveHistoryItem(string)`: Programmatic API to remove a specific command by text.
+- `ClearHistory` (Alt+F7 on Windows): Clears all history.
+- **Note**: Alt+Delete was previously bound to `KillWord`; that function remains available via `Alt+D` and `Ctrl+Delete` (Windows).
 
 **Database Initialization**:
 - `InitializeSQLiteDatabase(bool migrateTextHistory = false)` — creates schema if new DB
@@ -315,14 +326,22 @@ Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
 - [x] Using `RuntimeInformation.RuntimeIdentifier` for platform detection
 - [x] Single target framework - no conditional compilation
 
-### 3. Testing
+### 3. History Recall Ordering ✅ COMPLETE (April 2026)
+- [x] `ReadSQLiteHistory`: Chronological + deduplicated SQL (`ROW_NUMBER` window function)
+- [x] `HistoryRecall` (Up/Down): Walks `_history` backward, skips `FromOtherSession`, dedup via `HistoryNoDuplicates`
+- [x] `LocationHistoryRecall` (Alt+Up/Down): Pre-sorted weighted index (frequency DESC, recency DESC), filtered by current location
+- [x] New fields: `_locationSortedIndices`, `_locationSortedPosition` — reset when `_locationHistoryCommandCount` resets
+- [x] Migrated "Unknown" location entries from text history are invisible to location recall (by design)
+- [x] `RemoveFromHistory` (Alt+Delete): Default binding in Windows & Emacs modes — removes currently recalled history item from memory and SQLite
+
+### 4. Testing
 - [ ] Build and test on Windows/Linux/macOS
 - [ ] Test with PowerShell 7.4+ LTS
 - [ ] Verify native library loading on all platforms
 - [ ] Test history migration from text files
 - [ ] Validate SQLite database operations (CRUD, concurrent access)
 
-### 4. Documentation
+### 5. Documentation
 - [ ] Update README: minimum PowerShell 7.4+ requirement
 - [ ] Add release notes: breaking change for PS <7.4 users
 - [ ] Document SQLite feature usage and migration path
@@ -534,19 +553,31 @@ Three complementary approaches to fix native library resolution for the PowerShe
 ## Contact & Resources
 
 ### Internal Documentation
-- `History.cs`: Database implementation, migration, incremental read/write
-  - `InitializeSQLiteDatabase(bool migrateTextHistory)`: Schema creation (lines 212-308)
-  - `MigrateTextHistoryToSQLite()`: Reads from `HistorySavePathText` directly (lines 310-400)
-  - `WriteHistoryToSQLite()`: Incremental writes with normalized tables (lines 580-650)
-  - `ReadSQLiteHistory()`: Full history load (lines 888-960)
-  - `ReadHistorySQLiteIncrementally()`: Cross-session incremental reads (lines 790-860)
+- `History.cs`: Database implementation, migration, incremental read/write, recall logic
+  - `InitializeSQLiteDatabase(bool migrateTextHistory)`: Schema creation (lines ~224-320)
+  - `MigrateTextHistoryToSQLite()`: Reads from `HistorySavePathText` directly (lines ~321-420)
+  - `WriteHistoryToSQLite()`: Incremental writes with normalized tables (lines ~571-640)
+  - `ReadSQLiteHistory()`: Full history load, chronological + deduped SQL (lines ~907-990)
+  - `ReadHistorySQLiteIncrementally()`: Cross-session incremental reads (lines ~807-880)
+  - `HistoryRecall()`: Basic Up/Down recall, skips `FromOtherSession` (lines ~1538-1600)
+  - `LocationHistoryRecall()`: Alt+Up/Down, weighted sorted index (lines ~1738-1820)
+  - Fields: `_locationSortedIndices`, `_locationSortedPosition` (lines ~115-116)
+  - `RemoveFromHistory()`: Alt+Delete handler — removes displayed item from memory + SQLite (lines ~1602-1660)
+- `KeyBindings.cs`: Key binding dispatch tables
+  - Alt+Delete → `RemoveFromHistory` (Windows and Emacs modes)
+  - Previously was `KillWord`; `KillWord` remains on Alt+D and Ctrl+Delete (Windows)
 - `Options.cs`: Configuration management
   - `SetOptionsInternal()`: HistoryType switching (lines 29-49), path updates (lines 158-185)
 - `Cmdlets.cs`: Public API definitions
   - `PSConsoleReadLineOptions`: `HistorySavePathText`, `HistorySavePathSQLite`, computed `HistorySavePath` (lines 407-425)
   - `SetPSReadLineOption`: `-HistorySavePathText`, `-HistorySavePathSQLite` parameters (lines 850-873)
   - Default path initialization for all platforms (lines 240-310)
+- `ReadLine.cs`: Main loop, field resets
+  - `_locationSortedIndices`/`_locationSortedPosition` reset (lines ~626, ~830)
 - `PSReadLine.csproj`: Build configuration
+- `test/SQLiteHistoryTest.cs`: SQLite-specific tests (~44 tests)
+  - Location recall tests: `MultipleItemsSameLocation`, `CaseInsensitivePaths`, `DifferentLocationsFiltered`, `NoLocationFallsBackToNormalRecall`
+  - Frequency tests: `FrequentCommandRanksHigher`, `ExecutionCountStoredOnHistoryItem`, `WeightedOrderPreservesChronologyForSingleUse`
 
 ### External Resources
 - [Microsoft.Data.Sqlite Documentation](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/)
@@ -571,6 +602,13 @@ Three complementary approaches to fix native library resolution for the PowerShe
 - PowerShell's `NativeDllHandler` expects flat `{rid}/{libraryName}` layout, not NuGet's `runtimes/{rid}/native/`
 - Build script restructures NuGet output into PowerShell-compatible layout after `dotnet publish`
 - The NuGet `runtimes/` convention has existed since 2016; PowerShell's flat convention since 2018 — they were never aligned
+
+**Key decisions from history recall investigation (April 2026)**:
+- **Problem**: Same command stored multiple times in `ExecutionHistory` (once per location) — caused duplicates in recall. Migrated entries with `Location = "Unknown"` were invisible to location recall.
+- **Up/Down Arrow** (`HistoryRecall`): Pure chronological, DB-side dedup via `ROW_NUMBER()`. In-memory dedup governed by `HistoryNoDuplicates` option.
+- **Alt+Up/Down Arrow** (`LocationHistoryRecall`): Builds pre-sorted weighted index on first press — frequency DESC, then recency DESC. Only includes commands matching current `$PWD`. "Unknown" location entries are excluded by design.
+- **Alt+Delete** (`RemoveFromHistory`): Default binding in Windows & Emacs modes. Removes the currently recalled history entry from in-memory history and SQLite. Also works in F2 list view. Previously bound to `KillWord` (still available via `Alt+D` / `Ctrl+Delete`).
+- **Timestamps**: Stored as Unix seconds (`ToUnixTimeSeconds()`), read with `FromUnixTimeSeconds()`. Do NOT use .NET ticks conversion in ad-hoc SQL queries.
 
 **Developer Note**: Always use `./build.ps1` to get the correct module layout. Manual `dotnet build` output will have native DLLs in `runtimes/` which PowerShell cannot find.
 
