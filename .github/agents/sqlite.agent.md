@@ -152,15 +152,68 @@ private string[] GetSQLiteLibraryPaths()
 - `HistoryRecall()` relies on `HistoryNoDuplicates` option for in-memory dedup (the SQL already deduplicates DB-loaded entries).
 
 **History Deletion** (April 2026):
-- **Alt+Delete** (`RemoveFromHistory`): Default binding in both Windows and Emacs modes. While browsing history with Up/Down, removes the currently displayed entry from in-memory history and the SQLite database (if using SQLite mode). Also works in the F2 prediction list view.
+- **Alt+Delete** (`RemoveFromHistory`): Default binding in both Windows and Emacs modes. While browsing history with Up/Down, removes the currently displayed entry from in-memory history and the SQLite database (if using SQLite mode). After deletion, advances to the next **older** item (same direction as Up arrow) so the user can keep pressing Alt+Delete to delete consecutive items. Also works in the F2 prediction list view.
 - `RemoveHistoryItem(string)`: Programmatic API to remove a specific command by text.
 - `ClearHistory` (Alt+F7 on Windows): Clears all history.
 - **Note**: Alt+Delete was previously bound to `KillWord`; that function remains available via `Alt+D` and `Ctrl+Delete` (Windows).
+- **Critical**: `RemoveFromHistory` must increment `_recallHistoryCommandCount` and `_anyHistoryCommandCount` so the ReadLine main loop doesn't reset `_currentHistoryIndex` after the key press.
 
 **Database Initialization**:
 - `InitializeSQLiteDatabase(bool migrateTextHistory = false)` — creates schema if new DB
 - `migrateTextHistory: true` only on initial Text → SQLite switch (not when relocating DB)
 - Migration reads from `_options.HistorySavePathText` directly (no path derivation hacks)
+
+**Text-to-SQLite Migration Timestamps**:
+- Migrated items must all have timestamps **older** than "now" so they sort before any new SQLite entries
+- Timestamps are assigned after collecting all items: `migrationBase = UtcNow - (Count+1) minutes`, each item gets `migrationBase.AddMinutes(idx)` — oldest text line gets earliest timestamp
+- Do NOT assign timestamps during collection (the growing count inverts the order)
+
+**`_saved` Flag on Loaded Items**:
+- `ReadSQLiteHistory` and `ReadHistorySQLiteIncrementally` must set `_saved = true` on all loaded HistoryItems
+- Without this, `IncrementalHistoryWrite` re-writes loaded items with `LastExecuted = UtcNow`, destroying original timestamps and scrambling order
+
+**F2 List View History Stats Tooltip** (April 2026):
+- When `HistoryType` is `SQLite`, selecting a history item in the F2 prediction list view shows a colored stats tooltip beneath the selected entry
+- Tooltip format: `❯❯ ⟳ Runs 47  │  ⏱ Last 2m ago  │  📂 Dir ~/repos/PSReadline`
+- Icons with short text labels for accessibility (screen readers read the label; icons are visual decoration)
+- Labels rendered in dim/italic tooltip color, values in the highlight/accent color, separators dimmed
+- Fields shown: `ExecutionCount` (total across all locations via SUM), `StartTime` (relative time), `Location` (if not "Unknown")
+- **Custom renderer**: `RenderHistoryStatsTooltip(HistoryItem)` writes colored output directly to buffer lines — cannot use generic `RenderTooltip` because it iterates char-by-char and treats VT escape chars as control characters (renders `^[`)
+- `FormatHistoryStatsTooltip(HistoryItem)` generates plain-text version used as non-null `ToolTip` trigger
+- `SuggestionEntry.HistoryItemRef` field stores the `HistoryItem` reference so the renderer can access stats
+- `GetHistorySuggestions()` passes `HistoryItem` ref via `SuggestionEntry(string, string, int, HistoryItem)` constructor
+- **CRITICAL — C# 9 readonly struct field bug**: `SuggestionEntry` is a `struct` and `LangVersion` is 9.0. In C# 9, assigning a `readonly` field in a constructor body after `: this(...)` chaining **silently doesn't take effect** — the chained constructor's value wins. The `HistoryItemRef` constructor MUST set all fields directly (no constructor chaining). This was the root cause of tooltips falling through to the generic renderer.
+- **Icon styling**: Icons (⟳, ⏱, 📂) use dim-only (`\x1b[2m`), NOT dim+italic — italic causes emoji to lean/slant in terminals. Labels and separators use dim+italic (`\x1b[2;3m`). Values use the highlight/accent color.
+  - **VT attribute pitfall**: `_listPredictionTooltipColor` defaults to `\x1b[97;2;3m` (bright white + dim + italic). VT SGR attributes are **additive** — appending `\x1b[2m` does NOT cancel the italic from the tooltip color. Must use `\x1b[0m\x1b[2m` (full reset, then dim-only) before each icon character.
+- Uses existing `ShowToolTips` infrastructure (defaults to `true`)
+- In text history mode, tooltips remain `null` (no stats available)
+
+**ExecutionCount is Total Across All Locations** (April 2026):
+- Schema stores one `ExecutionHistory` row per command+location pair, each with its own `ExecutionCount`
+- `HistoryItem.ExecutionCount` represents the **total** (SUM) across all locations — answers "how much do I use this command?"
+- `ReadSQLiteHistory`: Uses `TotalCounts` CTE with `SUM(eh.ExecutionCount) GROUP BY CommandLine`, joined to the dedup query
+- `ReadHistorySQLiteIncrementally`: Correlated subquery `SELECT SUM(eh2.ExecutionCount) ... WHERE c2.CommandLine = hv.CommandLine`
+- `WriteHistoryToSQLite` read-back: `SELECT SUM(ExecutionCount) FROM ExecutionHistory WHERE CommandId = @CommandId` (no LocationId filter)
+- **Rationale**: Position in the F2 list already communicates local relevance. "Runs" should have one consistent meaning everywhere.
+
+**F2 List Ordering for SQLite Mode** (April 2026 — design decided, implementation pending):
+- **Top half**: Commands matching current directory, sorted by frecency (frequency + recency)
+- **Bottom half**: Global commands (all locations), sorted by frecency, excluding items already in top half
+- **Backfill**: If fewer than half-capacity local matches, remaining slots filled from global results
+- **Edge cases**: 0 local matches → all global. <5 global after dedup → show fewer total items.
+- **Plugins active** (3 history slots): Too few to split — just use frecency without partitioning
+- **Text mode**: Unchanged — pure recency like today
+- **Known issue**: Alt+Up/Down (`LocationHistoryRecall`) collides with VS Code integrated terminal — VS Code intercepts Alt+Up for terminal selection mode. Works fine in Windows Terminal, iTerm2, standalone pwsh. Consider adding secondary binding (e.g., Ctrl+Alt+Up) or documenting the collision.
+
+**Accessibility Considerations** (April 2026):
+- Terminal has no `aria-label` equivalent — screen readers read Unicode character names directly from the buffer
+- Icons alone (⟳, ⏱, 📂) would confuse screen readers ("clockwise gapped circle arrow 47")
+- Decision: Icon + short text label — icon for visual scanability, label for screen reader clarity
+- Example: `⟳ Runs 47` reads as "runs 47" with the icon as harmless noise
+
+**ReadLine Main Loop Counter Requirement**:
+- The main loop in `ReadLine.cs` (~lines 540-650) saves command counters before each key press; if counters didn't change, it resets state (e.g., `_currentHistoryIndex = _history.Count`)
+- Any history-related key handler MUST increment `_recallHistoryCommandCount` and/or `_anyHistoryCommandCount` to prevent this reset
 
 **Note**: With .NET 8.0, native library resolution is handled by `NativeLibrary.SetDllImportResolver` - no P/Invoke fallbacks needed.
 
@@ -333,6 +386,7 @@ Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
 - [x] New fields: `_locationSortedIndices`, `_locationSortedPosition` — reset when `_locationHistoryCommandCount` resets
 - [x] Migrated "Unknown" location entries from text history are invisible to location recall (by design)
 - [x] `RemoveFromHistory` (Alt+Delete): Default binding in Windows & Emacs modes — removes currently recalled history item from memory and SQLite
+- [x] F2 list view: History stats tooltip (Runs/Last/Dir) shown when selecting history items in SQLite mode
 
 ### 4. Testing
 - [ ] Build and test on Windows/Linux/macOS
@@ -562,10 +616,20 @@ Three complementary approaches to fix native library resolution for the PowerShe
   - `HistoryRecall()`: Basic Up/Down recall, skips `FromOtherSession` (lines ~1538-1600)
   - `LocationHistoryRecall()`: Alt+Up/Down, weighted sorted index (lines ~1738-1820)
   - Fields: `_locationSortedIndices`, `_locationSortedPosition` (lines ~115-116)
-  - `RemoveFromHistory()`: Alt+Delete handler — removes displayed item from memory + SQLite (lines ~1602-1660)
+  - `RemoveFromHistory()`: Alt+Delete handler — removes displayed item from memory + SQLite, advances to next older item (lines ~1612-1680)
+    - Must increment `_recallHistoryCommandCount` and `_anyHistoryCommandCount` to prevent main loop index reset
 - `KeyBindings.cs`: Key binding dispatch tables
   - Alt+Delete → `RemoveFromHistory` (Windows and Emacs modes)
   - Previously was `KillWord`; `KillWord` remains on Alt+D and Ctrl+Delete (Windows)
+- `Prediction.Views.cs`: F2 list view, history stats tooltip
+  - `FormatHistoryStatsTooltip(HistoryItem)`: Generates plain-text tooltip (non-null trigger for rendering)
+  - `RenderHistoryStatsTooltip(HistoryItem)`: Custom colored renderer — icons in dim-only style (no italic to prevent emoji slanting), labels in dim+italic, values in accent color
+  - `GetHistorySuggestions()`: Passes `HistoryItem` ref to `SuggestionEntry` for history items when in SQLite mode
+  - Rendering call site: checks `entry.HistoryItemRef != null` → uses `RenderHistoryStatsTooltip`, else generic `RenderTooltip`
+- `Prediction.Entry.cs`: Suggestion entry data
+  - `SuggestionEntry(string, string, int, HistoryItem)`: Constructor overload for history items with tooltip + item ref
+  - `HistoryItemRef` field: stores `HistoryItem` reference for custom tooltip rendering
+  - **WARNING**: Must NOT use `: this(...)` constructor chaining — C# 9 / `LangVersion 9.0` silently ignores `readonly` field assignments after chain. Set all fields directly.
 - `Options.cs`: Configuration management
   - `SetOptionsInternal()`: HistoryType switching (lines 29-49), path updates (lines 158-185)
 - `Cmdlets.cs`: Public API definitions
@@ -573,11 +637,16 @@ Three complementary approaches to fix native library resolution for the PowerShe
   - `SetPSReadLineOption`: `-HistorySavePathText`, `-HistorySavePathSQLite` parameters (lines 850-873)
   - Default path initialization for all platforms (lines 240-310)
 - `ReadLine.cs`: Main loop, field resets
+  - Main loop counter-based state reset (lines ~540-650): any history handler must increment its counter or state gets reset
   - `_locationSortedIndices`/`_locationSortedPosition` reset (lines ~626, ~830)
 - `PSReadLine.csproj`: Build configuration
-- `test/SQLiteHistoryTest.cs`: SQLite-specific tests (~44 tests)
+- `test/SQLiteHistoryTest.cs`: SQLite-specific tests (~50 tests)
   - Location recall tests: `MultipleItemsSameLocation`, `CaseInsensitivePaths`, `DifferentLocationsFiltered`, `NoLocationFallsBackToNormalRecall`
   - Frequency tests: `FrequentCommandRanksHigher`, `ExecutionCountStoredOnHistoryItem`, `WeightedOrderPreservesChronologyForSingleUse`
+  - Migration timestamp tests: `MigrationTimestampsAreChronologicalAndOlderThanNow`, `MigratedTextHistoryOlderThanNewSQLiteEntries`, `UpArrowShowsNewestFirstAfterMigration`
+- `test/KillYankTest.cs`: Alt+Delete behavior tests
+  - `AltDeleteBoundToRemoveFromHistory_Emacs`, `AltDeleteBoundToRemoveFromHistory_Windows`
+  - `AltDeleteAdvancesToNextOlderItem`, `AltDeleteConsecutiveDeletes`, `AltDeleteLastRemainingItem`, `AltDeleteOldestItem`
 
 ### External Resources
 - [Microsoft.Data.Sqlite Documentation](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/)
@@ -607,8 +676,14 @@ Three complementary approaches to fix native library resolution for the PowerShe
 - **Problem**: Same command stored multiple times in `ExecutionHistory` (once per location) — caused duplicates in recall. Migrated entries with `Location = "Unknown"` were invisible to location recall.
 - **Up/Down Arrow** (`HistoryRecall`): Pure chronological, DB-side dedup via `ROW_NUMBER()`. In-memory dedup governed by `HistoryNoDuplicates` option.
 - **Alt+Up/Down Arrow** (`LocationHistoryRecall`): Builds pre-sorted weighted index on first press — frequency DESC, then recency DESC. Only includes commands matching current `$PWD`. "Unknown" location entries are excluded by design.
-- **Alt+Delete** (`RemoveFromHistory`): Default binding in Windows & Emacs modes. Removes the currently recalled history entry from in-memory history and SQLite. Also works in F2 list view. Previously bound to `KillWord` (still available via `Alt+D` / `Ctrl+Delete`).
+- **Alt+Delete** (`RemoveFromHistory`): Default binding in Windows & Emacs modes. Removes the currently recalled history entry from in-memory history and SQLite. Advances to next older item after deletion. Also works in F2 list view. Previously bound to `KillWord` (still available via `Alt+D` / `Ctrl+Delete`). Must increment `_recallHistoryCommandCount`/`_anyHistoryCommandCount` to prevent main loop reset.
+- **F2 List View Stats Tooltip**: Custom colored renderer in SQLite mode. Format: `❯❯ ⟳ Runs N  │  ⏱ Last Xh ago  │  📂 Dir path`. Icons + short labels for accessibility. Cannot embed VT sequences in tooltip text (char-by-char renderer treats `\x1b` as control char), so `RenderHistoryStatsTooltip` writes directly to buffer. `HistoryItemRef` on `SuggestionEntry` provides the data. Icons use dim-only style (italic makes emoji lean). Labels use dim+italic. Values use accent color.
+  - **C# 9 gotcha**: `SuggestionEntry` is a struct with `LangVersion 9.0`. `readonly` fields assigned in constructor body after `: this(...)` chaining silently don't take effect. The `HistoryItemRef` constructor must set all fields directly — no chaining.
+- **ExecutionCount = Total (SUM)**: `ExecutionCount` on `HistoryItem` is always the sum across all locations. All three SQL read paths (`ReadSQLiteHistory`, `ReadHistorySQLiteIncrementally`, `WriteHistoryToSQLite` read-back) use `SUM(ExecutionCount)`. Per-location count was confusing ("Runs: 1" for `cd ..` used 47× from different dirs).
+- **F2 List Ordering** (design decided, not yet implemented): Top half = current-dir commands by frecency, bottom half = global by frecency, with backfill. Plugins-active (3 slots) = just frecency, no split.
+- **Alt+Up VS Code Collision**: VS Code intercepts Alt+Up in integrated terminal for selection mode — `LocationHistoryRecall` is unreachable. Works in Windows Terminal/iTerm2/standalone pwsh. May need secondary binding or documentation.
 - **Timestamps**: Stored as Unix seconds (`ToUnixTimeSeconds()`), read with `FromUnixTimeSeconds()`. Do NOT use .NET ticks conversion in ad-hoc SQL queries.
+- **Migration timestamps**: Assigned post-collection with oldest text line = earliest time, all before UtcNow. Items loaded from DB must have `_saved = true` to prevent re-write with UtcNow.
 
 **Developer Note**: Always use `./build.ps1` to get the correct module layout. Manual `dotnet build` output will have native DLLs in `runtimes/` which PowerShell cannot find.
 
