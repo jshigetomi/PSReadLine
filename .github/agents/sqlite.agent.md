@@ -7,7 +7,7 @@ tools: [vscode, execute, read, agent, edit, search, web, browser, todo]
 
 # PSReadLine SQLite History Implementation Guide
 
-**Last Updated**: April 9, 2026  
+**Last Updated**: April 14, 2026  
 **Status**: Active - Built on .NET 8.0  
 **Target**: PowerShell 7.4+ (LTS) compatibility
 
@@ -30,7 +30,7 @@ This guide documents SQLite-based history implementation for PSReadLine. **PSRea
 When building for netstandard2.0, the generated `deps.json` contains:
 ```json
 "SQLitePCLRaw.lib.e_sqlite3/2.1.10": {
-  "runtimeTargets": {}  // ← EMPTY - no native DLLs listed
+  "runtimeTargets": {}  // ΓåÉ EMPTY - no native DLLs listed
 }
 ```
 
@@ -71,10 +71,10 @@ When building for net6.0+:
 
 | PowerShell | .NET Runtime | Support Status | Works with net6.0? | Works with net8.0? |
 |-----------|--------------|----------------|-------------------|-------------------|
-| 5.1 | .NET Framework 4.7.2 | Indefinite | ❌ No | ❌ No |
-| 7.0 | .NET Core 3.1 | Ended Dec 2022 | ✅ Yes | ✅ Yes |
-| 7.2 LTS | .NET 6.0 | Ended Nov 2024 | ✅ Yes | ✅ Yes |
-| 7.4 LTS | .NET 8.0 | Until Nov 2026 | ✅ Yes | ✅ Yes |
+| 5.1 | .NET Framework 4.7.2 | Indefinite | Γ¥î No | Γ¥î No |
+| 7.0 | .NET Core 3.1 | Ended Dec 2022 | Γ£à Yes | Γ£à Yes |
+| 7.2 LTS | .NET 6.0 | Ended Nov 2024 | Γ£à Yes | Γ£à Yes |
+| 7.4 LTS | .NET 8.0 | Until Nov 2026 | Γ£à Yes | Γ£à Yes |
 
 ### Why .NET 8.0?
 
@@ -148,7 +148,7 @@ private string[] GetSQLiteLibraryPaths()
 
 **History Recall Ordering** (decided April 2026):
 - `ReadSQLiteHistory()` loads history **chronologically** (`LastExecuted DESC`) with **per-CommandLine deduplication** via `ROW_NUMBER() OVER (PARTITION BY CommandLine ORDER BY LastExecuted DESC)`. This ensures basic Up/Down recall is simple reverse-chronological with no duplicates.
-- `LocationHistoryRecall()` builds a **weighted sorted index** on first press: filtered to current location, then sorted by `ExecutionCount DESC` (frequency), then by position DESC (recency). This makes frequently-used commands at the current directory surface first.
+- `LocationHistoryRecall()` builds a **weighted sorted index** on first press: filtered to current location, then sorted by **per-location** `ExecutionCount DESC` (frequency at this directory), then by position DESC (recency). In SQLite mode, queries per-location counts via `GetLocationExecutionCounts()` so that a command run once here but 100 times elsewhere doesn't dominate. Falls back to total `ExecutionCount` in Text mode.
 - `HistoryRecall()` relies on `HistoryNoDuplicates` option for in-memory dedup (the SQL already deduplicates DB-loaded entries).
 
 **History Deletion** (April 2026):
@@ -159,13 +159,13 @@ private string[] GetSQLiteLibraryPaths()
 - **Critical**: `RemoveFromHistory` must increment `_recallHistoryCommandCount` and `_anyHistoryCommandCount` so the ReadLine main loop doesn't reset `_currentHistoryIndex` after the key press.
 
 **Database Initialization**:
-- `InitializeSQLiteDatabase(bool migrateTextHistory = false)` — creates schema if new DB
-- `migrateTextHistory: true` only on initial Text → SQLite switch (not when relocating DB)
+- `InitializeSQLiteDatabase(bool migrateTextHistory = false)` ΓÇö creates schema if new DB
+- `migrateTextHistory: true` only on initial Text ΓåÆ SQLite switch (not when relocating DB)
 - Migration reads from `_options.HistorySavePathText` directly (no path derivation hacks)
 
 **Text-to-SQLite Migration Timestamps**:
 - Migrated items must all have timestamps **older** than "now" so they sort before any new SQLite entries
-- Timestamps are assigned after collecting all items: `migrationBase = UtcNow - (Count+1) minutes`, each item gets `migrationBase.AddMinutes(idx)` — oldest text line gets earliest timestamp
+- Timestamps are assigned after collecting all items: `migrationBase = UtcNow - (Count+1) minutes`, each item gets `migrationBase.AddMinutes(idx)` ΓÇö oldest text line gets earliest timestamp
 - Do NOT assign timestamps during collection (the growing count inverts the order)
 
 **`_saved` Flag on Loaded Items**:
@@ -174,42 +174,47 @@ private string[] GetSQLiteLibraryPaths()
 
 **F2 List View History Stats Tooltip** (April 2026):
 - When `HistoryType` is `SQLite`, selecting a history item in the F2 prediction list view shows a colored stats tooltip beneath the selected entry
-- Tooltip format: `❯❯ ⟳ Runs 47  │  ⏱ Last 2m ago  │  📂 Dir ~/repos/PSReadline`
+- Tooltip format: `Γ¥»Γ¥» Γƒ│ Runs 47  Γöé  ΓÅ▒ Last 2m ago  Γöé  ≡ƒôé Dir ~/repos/PSReadline`
 - Icons with short text labels for accessibility (screen readers read the label; icons are visual decoration)
 - Labels rendered in dim/italic tooltip color, values in the highlight/accent color, separators dimmed
 - Fields shown: `ExecutionCount` (total across all locations via SUM), `StartTime` (relative time), `Location` (if not "Unknown")
-- **Custom renderer**: `RenderHistoryStatsTooltip(HistoryItem)` writes colored output directly to buffer lines — cannot use generic `RenderTooltip` because it iterates char-by-char and treats VT escape chars as control characters (renders `^[`)
+- **Custom renderer**: `RenderHistoryStatsTooltip(HistoryItem)` writes colored output directly to buffer lines ΓÇö cannot use generic `RenderTooltip` because it iterates char-by-char and treats VT escape chars as control characters (renders `^[`)
 - `FormatHistoryStatsTooltip(HistoryItem)` generates plain-text version used as non-null `ToolTip` trigger
 - `SuggestionEntry.HistoryItemRef` field stores the `HistoryItem` reference so the renderer can access stats
 - `GetHistorySuggestions()` passes `HistoryItem` ref via `SuggestionEntry(string, string, int, HistoryItem)` constructor
-- **CRITICAL — C# 9 readonly struct field bug**: `SuggestionEntry` is a `struct` and `LangVersion` is 9.0. In C# 9, assigning a `readonly` field in a constructor body after `: this(...)` chaining **silently doesn't take effect** — the chained constructor's value wins. The `HistoryItemRef` constructor MUST set all fields directly (no constructor chaining). This was the root cause of tooltips falling through to the generic renderer.
-- **Icon styling**: Icons (⟳, ⏱, 📂) use dim-only (`\x1b[2m`), NOT dim+italic — italic causes emoji to lean/slant in terminals. Labels and separators use dim+italic (`\x1b[2;3m`). Values use the highlight/accent color.
-  - **VT attribute pitfall**: `_listPredictionTooltipColor` defaults to `\x1b[97;2;3m` (bright white + dim + italic). VT SGR attributes are **additive** — appending `\x1b[2m` does NOT cancel the italic from the tooltip color. Must use `\x1b[0m\x1b[2m` (full reset, then dim-only) before each icon character.
+- **CRITICAL ΓÇö C# 9 readonly struct field bug**: `SuggestionEntry` is a `struct` and `LangVersion` is 9.0. In C# 9, assigning a `readonly` field in a constructor body after `: this(...)` chaining **silently doesn't take effect** ΓÇö the chained constructor's value wins. The `HistoryItemRef` constructor MUST set all fields directly (no constructor chaining). This was the root cause of tooltips falling through to the generic renderer.
+- **Icon styling**: Icons (Γƒ│, ΓÅ▒, ≡ƒôé) use dim-only (`\x1b[2m`), NOT dim+italic ΓÇö italic causes emoji to lean/slant in terminals. Labels and separators use dim+italic (`\x1b[2;3m`). Values use the highlight/accent color.
+  - **VT attribute pitfall**: `_listPredictionTooltipColor` defaults to `\x1b[97;2;3m` (bright white + dim + italic). VT SGR attributes are **additive** ΓÇö appending `\x1b[2m` does NOT cancel the italic from the tooltip color. Must use `\x1b[0m\x1b[2m` (full reset, then dim-only) before each icon character.
 - Uses existing `ShowToolTips` infrastructure (defaults to `true`)
 - In text history mode, tooltips remain `null` (no stats available)
 
 **ExecutionCount is Total Across All Locations** (April 2026):
 - Schema stores one `ExecutionHistory` row per command+location pair, each with its own `ExecutionCount`
-- `HistoryItem.ExecutionCount` represents the **total** (SUM) across all locations — answers "how much do I use this command?"
+- `HistoryItem.ExecutionCount` represents the **total** (SUM) across all locations ΓÇö answers "how much do I use this command?"
 - `ReadSQLiteHistory`: Uses `TotalCounts` CTE with `SUM(eh.ExecutionCount) GROUP BY CommandLine`, joined to the dedup query
 - `ReadHistorySQLiteIncrementally`: Correlated subquery `SELECT SUM(eh2.ExecutionCount) ... WHERE c2.CommandLine = hv.CommandLine`
 - `WriteHistoryToSQLite` read-back: `SELECT SUM(ExecutionCount) FROM ExecutionHistory WHERE CommandId = @CommandId` (no LocationId filter)
 - **Rationale**: Position in the F2 list already communicates local relevance. "Runs" should have one consistent meaning everywhere.
 
-**F2 List Ordering for SQLite Mode** (April 2026 — design decided, implementation pending):
-- **Top half**: Commands matching current directory, sorted by frecency (frequency + recency)
-- **Bottom half**: Global commands (all locations), sorted by frecency, excluding items already in top half
+**Per-Location Execution Counts for Local Sorting** (April 2026):
+- `GetLocationExecutionCounts(string location)`: Queries DB for per-location counts via `ExecutionHistory` joined to `Commands` and `Locations`, opens read-only connection. Returns `Dictionary<string, long>` mapping CommandLine → local ExecutionCount.
+- Used by `LocationHistoryRecall` and F2 local partition sorting. Global partition and tooltip display still use total `ExecutionCount`.
+- **Rationale**: A command run once here but many times elsewhere (e.g., `code .`) shouldn't rank above commands frequently used in this directory.
+
+**F2 List Ordering for SQLite Mode** (April 2026 — implemented):
+- **Top half**: Commands matching current directory, sorted by **per-location** frecency (local ExecutionCount + recency)
+- **Bottom half**: Global commands (all locations), sorted by **total** frecency, excluding items already in top half
 - **Backfill**: If fewer than half-capacity local matches, remaining slots filled from global results
-- **Edge cases**: 0 local matches → all global. <5 global after dedup → show fewer total items.
-- **Plugins active** (3 history slots): Too few to split — just use frecency without partitioning
-- **Text mode**: Unchanged — pure recency like today
-- **Known issue**: Alt+Up/Down (`LocationHistoryRecall`) collides with VS Code integrated terminal — VS Code intercepts Alt+Up for terminal selection mode. Works fine in Windows Terminal, iTerm2, standalone pwsh. Consider adding secondary binding (e.g., Ctrl+Alt+Up) or documenting the collision.
+- **Edge cases**: 0 local matches ΓåÆ all global. <5 global after dedup ΓåÆ show fewer total items.
+- **Plugins active** (3 history slots): Too few to split ΓÇö just use frecency without partitioning
+- **Text mode**: Unchanged ΓÇö pure recency like today
+- **Known issue**: Alt+Up/Down (`LocationHistoryRecall`) collides with VS Code integrated terminal ΓÇö VS Code intercepts Alt+Up for terminal selection mode. Works fine in Windows Terminal, iTerm2, standalone pwsh. Consider adding secondary binding (e.g., Ctrl+Alt+Up) or documenting the collision.
 
 **Accessibility Considerations** (April 2026):
-- Terminal has no `aria-label` equivalent — screen readers read Unicode character names directly from the buffer
-- Icons alone (⟳, ⏱, 📂) would confuse screen readers ("clockwise gapped circle arrow 47")
-- Decision: Icon + short text label — icon for visual scanability, label for screen reader clarity
-- Example: `⟳ Runs 47` reads as "runs 47" with the icon as harmless noise
+- Terminal has no `aria-label` equivalent ΓÇö screen readers read Unicode character names directly from the buffer
+- Icons alone (Γƒ│, ΓÅ▒, ≡ƒôé) would confuse screen readers ("clockwise gapped circle arrow 47")
+- Decision: Icon + short text label ΓÇö icon for visual scanability, label for screen reader clarity
+- Example: `Γƒ│ Runs 47` reads as "runs 47" with the icon as harmless noise
 
 **ReadLine Main Loop Counter Requirement**:
 - The main loop in `ReadLine.cs` (~lines 540-650) saves command counters before each key press; if counters didn't change, it resets state (e.g., `_currentHistoryIndex = _history.Count`)
@@ -222,7 +227,7 @@ private string[] GetSQLiteLibraryPaths()
 
 **Key Methods**:
 - `SetOptionsInternal()`: Handles `HistoryType` switching between `Text` and `SQLite`
-- Lines 29-49: History type initialization — switches to SQLite, initializes DB, migrates text history
+- Lines 29-49: History type initialization ΓÇö switches to SQLite, initializes DB, migrates text history
 - Lines 158-185: `HistorySavePathText` / `HistorySavePathSQLite` update handling
 
 **HistoryType Switching**:
@@ -327,7 +332,7 @@ public string HistorySavePath => HistoryType switch
 };
 ```
 
-**Design**: `HistorySavePath` is a computed read-only property. All internal code uses `HistorySavePath` transparently — it automatically resolves to the correct stored path based on `HistoryType`. Users configure each path independently via `HistorySavePathText` and `HistorySavePathSQLite`.
+**Design**: `HistorySavePath` is a computed read-only property. All internal code uses `HistorySavePath` transparently ΓÇö it automatically resolves to the correct stored path based on `HistoryType`. Users configure each path independently via `HistorySavePathText` and `HistorySavePathSQLite`.
 
 **Cmdlet Parameters** (`SetPSReadLineOption`):
 ```csharp
@@ -367,25 +372,25 @@ Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
 
 ## Implementation Checklist
 
-### 1. Framework Status ✅ COMPLETE
+### 1. Framework Status Γ£à COMPLETE
 - [x] Changed to `<TargetFramework>net8.0</TargetFramework>`
 - [x] Updated `PSReadLine.psd1`: `PowerShellVersion = '7.4'`
 - [x] Updated SQLite packages to version 2.1.11+
 - [x] Runtime assets auto-deploy (no manual Content configuration)
 
-### 2. Code Status ✅ COMPLETE
+### 2. Code Status Γ£à COMPLETE
 - [x] Using `NativeLibrary.SetDllImportResolver` for native library resolution
 - [x] No P/Invoke declarations needed
 - [x] Using `RuntimeInformation.RuntimeIdentifier` for platform detection
 - [x] Single target framework - no conditional compilation
 
-### 3. History Recall Ordering ✅ COMPLETE (April 2026)
+### 3. History Recall Ordering Γ£à COMPLETE (April 2026)
 - [x] `ReadSQLiteHistory`: Chronological + deduplicated SQL (`ROW_NUMBER` window function)
 - [x] `HistoryRecall` (Up/Down): Walks `_history` backward, skips `FromOtherSession`, dedup via `HistoryNoDuplicates`
-- [x] `LocationHistoryRecall` (Alt+Up/Down): Pre-sorted weighted index (frequency DESC, recency DESC), filtered by current location
-- [x] New fields: `_locationSortedIndices`, `_locationSortedPosition` — reset when `_locationHistoryCommandCount` resets
+- [x] `LocationHistoryRecall` (Alt+Up/Down): Pre-sorted weighted index (per-location frequency DESC, recency DESC), filtered by current location
+- [x] New fields: `_locationSortedIndices`, `_locationSortedPosition` ΓÇö reset when `_locationHistoryCommandCount` resets
 - [x] Migrated "Unknown" location entries from text history are invisible to location recall (by design)
-- [x] `RemoveFromHistory` (Alt+Delete): Default binding in Windows & Emacs modes — removes currently recalled history item from memory and SQLite
+- [x] `RemoveFromHistory` (Alt+Delete): Default binding in Windows & Emacs modes ΓÇö removes currently recalled history item from memory and SQLite
 - [x] F2 list view: History stats tooltip (Runs/Last/Dir) shown when selecting history items in SQLite mode
 
 ### 4. Testing
@@ -408,10 +413,16 @@ Set-PSReadLineOption -HistorySavePathSQLite "C:\MyHistory\history.db"
 # Build and publish (build script handles native DLL restructuring)
 ./build.ps1
 
-# Or build manually (runtimes/ stays in NuGet layout — no restructuring)
+# Clean build ΓÇö required when incremental builds don't refresh DLLs
+./build.ps1 -Clean
+./build.ps1
+
+# Or build manually (runtimes/ stays in NuGet layout ΓÇö no restructuring)
 dotnet build PSReadLine/PSReadLine.csproj -c Debug
 dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 ```
+
+**IMPORTANT ΓÇö Stale DLL pitfall**: Incremental `./build.ps1` may NOT refresh the published DLLs if the build system considers them up-to-date. If code changes aren't taking effect, run `./build.ps1 -Clean` first, then rebuild. This is especially critical after adding new methods or changing method signatures ΓÇö the old DLL in the `publish/` output (and the installed module folder) won't have the new code.
 
 **Note**: `dotnet build`/`publish` produces the NuGet `runtimes/{rid}/native/` layout. The `BuildMainModule` task in `PSReadLine.build.ps1` restructures this into the flat `{rid}/` layout after publish. If building manually, the native DLLs will be in `runtimes/` and won't be found by PowerShell's ALC.
 
@@ -419,8 +430,14 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 
 ## Troubleshooting
 
+**Code changes not taking effect after rebuild**:
+- Incremental `./build.ps1` can leave stale DLLs in `publish/` and the installed module folder
+- Fix: `./build.ps1 -Clean` then `./build.ps1` to force a full rebuild
+- PowerShell caches assemblies in-process — **all pwsh sessions must be restarted** after deploying a new DLL
+- Verify with reflection: check that expected methods exist on the loaded type (see Verification snippet at end of guide)
+
 **Native DLL not found**:
-- PSReadLine's `deps.json` is NOT read by the .NET host — only `pwsh.deps.json` is processed at startup
+- PSReadLine's `deps.json` is NOT read by the .NET host ΓÇö only `pwsh.deps.json` is processed at startup
 - Native library resolution for modules happens via PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler`
 - This handler probes `{moduleDir}/{rid}/{libraryName}` (flat layout), NOT `runtimes/{rid}/native/`
 - Verify native libraries exist in flat `{rid}/` folders: e.g., `bin/Debug/net8.0/win-x64/e_sqlite3.dll`
@@ -429,7 +446,7 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 - A random `e_sqlite3.dll` on PATH (from other tools) can mask the real problem
 
 **How native resolution actually works for modules**:
-1. `COREHOST_TRACE` only shows `pwsh.deps.json` processing — module deps.json is never read at the native host layer
+1. `COREHOST_TRACE` only shows `pwsh.deps.json` processing ΓÇö module deps.json is never read at the native host layer
 2. PowerShell's `CorePsAssemblyLoadContext.NativeDllHandler` resolves native DLLs for modules
 3. It builds: `Path.Combine(assemblyDir, runtimeIdentifier, libraryName) + extension`
 4. e.g., `{moduleDir}/win-x64/e_sqlite3.dll`
@@ -438,7 +455,7 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 **deps.json runtimeTargets are dead data for modules**:
 - PSReadLine's `deps.json` correctly lists `runtimes/win-x64/native/e_sqlite3.dll` in `runtimeTargets`
 - But this is ONLY used when the app's `deps.json` is read (i.e., for standalone apps)
-- For PowerShell modules, this data is never consumed — confirmed via COREHOST_TRACE analysis
+- For PowerShell modules, this data is never consumed ΓÇö confirmed via COREHOST_TRACE analysis
 
 **Multiple SQLite versions**: 
 - All SQLitePCLRaw packages must use the same version (currently 2.1.11)
@@ -451,7 +468,7 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 
 **winsqlite3 fallback**:
 - If `SQLitePCLRaw.provider.winsqlite3.dll` is in the build output, SQLitePCLRaw may use Windows' built-in `C:\WINDOWS\SYSTEM32\winsqlite3.DLL` instead of `e_sqlite3`
-- This works on Windows but is not the intended provider — verify with `Get-Process` modules output
+- This works on Windows but is not the intended provider ΓÇö verify with `Get-Process` modules output
 
 ---
 
@@ -460,19 +477,19 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 ### SQLite vs Text History
 
 **Text History**:
-- ✅ Simple, no dependencies
-- ✅ Human-readable
-- ❌ Linear search O(n)
-- ❌ Duplicates waste space
-- ❌ No location/time-based queries
+- Γ£à Simple, no dependencies
+- Γ£à Human-readable
+- Γ¥î Linear search O(n)
+- Γ¥î Duplicates waste space
+- Γ¥î No location/time-based queries
 
 **SQLite History**:
-- ✅ Fast indexed queries O(log n)
-- ✅ Deduplication saves space
-- ✅ Rich query capabilities (location, frequency, time-range)
-- ✅ Transactional integrity
-- ❌ Requires native library deployment
-- ❌ Binary format
+- Γ£à Fast indexed queries O(log n)
+- Γ£à Deduplication saves space
+- Γ£à Rich query capabilities (location, frequency, time-range)
+- Γ£à Transactional integrity
+- Γ¥î Requires native library deployment
+- Γ¥î Binary format
 
 ### Optimization Tips
 
@@ -500,7 +517,7 @@ dotnet publish PSReadLine/PSReadLine.csproj -c Debug
 2. **PowerShell versions**: 7.0, 7.2, 7.4 compatibility
 3. **Concurrent access**: Multiple PowerShell sessions
 4. **Large datasets**: Performance with 10k+ history entries
-5. **Upgrade scenarios**: netstandard2.0 → net6.0 module replacement
+5. **Upgrade scenarios**: netstandard2.0 ΓåÆ net6.0 module replacement
 
 ### Test Environments
 
@@ -544,38 +561,38 @@ This means:
 
 After `dotnet publish`, the build script (`PSReadLine.build.ps1`) restructures:
 ```
-runtimes/win-x64/native/e_sqlite3.dll  →  win-x64/e_sqlite3.dll
-runtimes/linux-x64/native/libe_sqlite3.so  →  linux-x64/libe_sqlite3.so
+runtimes/win-x64/native/e_sqlite3.dll  ΓåÆ  win-x64/e_sqlite3.dll
+runtimes/linux-x64/native/libe_sqlite3.so  ΓåÆ  linux-x64/libe_sqlite3.so
 ```
 
 Final module layout:
 ```
 PSReadLine/
-├── Microsoft.PowerShell.PSReadLine.dll
-├── Microsoft.PowerShell.Pager.dll
-├── Microsoft.Data.Sqlite.dll
-├── SQLitePCLRaw.core.dll
-├── SQLitePCLRaw.batteries_v2.dll
-├── SQLitePCLRaw.provider.e_sqlite3.dll
-├── PSReadLine.psd1  (PowerShellVersion = '7.4')
-├── PSReadLine.psm1
-├── PSReadLine.format.ps1xml
-├── win-x64/
-│   └── e_sqlite3.dll
-├── win-arm64/
-│   └── e_sqlite3.dll
-├── linux-x64/
-│   └── libe_sqlite3.so
-├── linux-arm64/
-│   └── libe_sqlite3.so
-├── linux-musl-x64/
-│   └── libe_sqlite3.so
-├── linux-musl-arm64/
-│   └── libe_sqlite3.so
-├── osx-x64/
-│   └── libe_sqlite3.dylib
-└── osx-arm64/
-    └── libe_sqlite3.dylib
+Γö£ΓöÇΓöÇ Microsoft.PowerShell.PSReadLine.dll
+Γö£ΓöÇΓöÇ Microsoft.PowerShell.Pager.dll
+Γö£ΓöÇΓöÇ Microsoft.Data.Sqlite.dll
+Γö£ΓöÇΓöÇ SQLitePCLRaw.core.dll
+Γö£ΓöÇΓöÇ SQLitePCLRaw.batteries_v2.dll
+Γö£ΓöÇΓöÇ SQLitePCLRaw.provider.e_sqlite3.dll
+Γö£ΓöÇΓöÇ PSReadLine.psd1  (PowerShellVersion = '7.4')
+Γö£ΓöÇΓöÇ PSReadLine.psm1
+Γö£ΓöÇΓöÇ PSReadLine.format.ps1xml
+Γö£ΓöÇΓöÇ win-x64/
+Γöé   ΓööΓöÇΓöÇ e_sqlite3.dll
+Γö£ΓöÇΓöÇ win-arm64/
+Γöé   ΓööΓöÇΓöÇ e_sqlite3.dll
+Γö£ΓöÇΓöÇ linux-x64/
+Γöé   ΓööΓöÇΓöÇ libe_sqlite3.so
+Γö£ΓöÇΓöÇ linux-arm64/
+Γöé   ΓööΓöÇΓöÇ libe_sqlite3.so
+Γö£ΓöÇΓöÇ linux-musl-x64/
+Γöé   ΓööΓöÇΓöÇ libe_sqlite3.so
+Γö£ΓöÇΓöÇ linux-musl-arm64/
+Γöé   ΓööΓöÇΓöÇ libe_sqlite3.so
+Γö£ΓöÇΓöÇ osx-x64/
+Γöé   ΓööΓöÇΓöÇ libe_sqlite3.dylib
+ΓööΓöÇΓöÇ osx-arm64/
+    ΓööΓöÇΓöÇ libe_sqlite3.dylib
 ```
 
 ### Supported RIDs
@@ -597,7 +614,7 @@ PSReadLine/
 Three complementary approaches to fix native library resolution for the PowerShell ecosystem:
 
 1. **PowerShell engine fix** (recommended): Add `runtimes/{rid}/native/` as a fallback probe path in `NativeDllHandler`. ~5 line change, benefits all modules.
-2. **PSResourceGet restructuring**: Handle `runtimes/` → `{rid}/` layout transformation during `Install-PSResource`. Benefits all installed modules.
+2. **PSResourceGet restructuring**: Handle `runtimes/` ΓåÆ `{rid}/` layout transformation during `Install-PSResource`. Benefits all installed modules.
 3. **Module-shipped resolver**: PSReadLine can ship its own `NativeLibrary.SetDllImportResolver` as belt-and-suspenders for older PowerShell versions.
 
 **Breaking Change**: PSReadLine 3.0 requires PowerShell 7.4+ (LTS). Users on older versions must stay on PSReadLine 2.x.
@@ -614,22 +631,24 @@ Three complementary approaches to fix native library resolution for the PowerShe
   - `ReadSQLiteHistory()`: Full history load, chronological + deduped SQL (lines ~907-990)
   - `ReadHistorySQLiteIncrementally()`: Cross-session incremental reads (lines ~807-880)
   - `HistoryRecall()`: Basic Up/Down recall, skips `FromOtherSession` (lines ~1538-1600)
-  - `LocationHistoryRecall()`: Alt+Up/Down, weighted sorted index (lines ~1738-1820)
+  - `LocationHistoryRecall()`: Alt+Up/Down, weighted sorted index using per-location counts (lines ~1738-1820)
+  - `GetLocationExecutionCounts(string)`: Queries per-location execution counts from DB (lines ~1497-1535)
   - Fields: `_locationSortedIndices`, `_locationSortedPosition` (lines ~115-116)
-  - `RemoveFromHistory()`: Alt+Delete handler — removes displayed item from memory + SQLite, advances to next older item (lines ~1612-1680)
+  - `RemoveFromHistory()`: Alt+Delete handler ΓÇö removes displayed item from memory + SQLite, advances to next older item (lines ~1612-1680)
     - Must increment `_recallHistoryCommandCount` and `_anyHistoryCommandCount` to prevent main loop index reset
 - `KeyBindings.cs`: Key binding dispatch tables
-  - Alt+Delete → `RemoveFromHistory` (Windows and Emacs modes)
+  - Alt+Delete ΓåÆ `RemoveFromHistory` (Windows and Emacs modes)
   - Previously was `KillWord`; `KillWord` remains on Alt+D and Ctrl+Delete (Windows)
 - `Prediction.Views.cs`: F2 list view, history stats tooltip
   - `FormatHistoryStatsTooltip(HistoryItem)`: Generates plain-text tooltip (non-null trigger for rendering)
-  - `RenderHistoryStatsTooltip(HistoryItem)`: Custom colored renderer — icons in dim-only style (no italic to prevent emoji slanting), labels in dim+italic, values in accent color
+  - `RenderHistoryStatsTooltip(HistoryItem)`: Custom colored renderer ΓÇö icons in dim-only style (no italic to prevent emoji slanting), labels in dim+italic, values in accent color
   - `GetHistorySuggestions()`: Passes `HistoryItem` ref to `SuggestionEntry` for history items when in SQLite mode
-  - Rendering call site: checks `entry.HistoryItemRef != null` → uses `RenderHistoryStatsTooltip`, else generic `RenderTooltip`
+  - `LocalFrecencyCompare`: Non-static comparator that uses per-location counts (via `GetLocationExecutionCounts`) for local partition sorting; `FrecencyCompare` (static, total counts) used for global partition
+  - Rendering call site: checks `entry.HistoryItemRef != null` ΓåÆ uses `RenderHistoryStatsTooltip`, else generic `RenderTooltip`
 - `Prediction.Entry.cs`: Suggestion entry data
   - `SuggestionEntry(string, string, int, HistoryItem)`: Constructor overload for history items with tooltip + item ref
   - `HistoryItemRef` field: stores `HistoryItem` reference for custom tooltip rendering
-  - **WARNING**: Must NOT use `: this(...)` constructor chaining — C# 9 / `LangVersion 9.0` silently ignores `readonly` field assignments after chain. Set all fields directly.
+  - **WARNING**: Must NOT use `: this(...)` constructor chaining ΓÇö C# 9 / `LangVersion 9.0` silently ignores `readonly` field assignments after chain. Set all fields directly.
 - `Options.cs`: Configuration management
   - `SetOptionsInternal()`: HistoryType switching (lines 29-49), path updates (lines 158-185)
 - `Cmdlets.cs`: Public API definitions
@@ -661,8 +680,8 @@ Three complementary approaches to fix native library resolution for the PowerShe
 **Current Status**: PSReadLine is built on .NET 8.0 with full SQLite support.
 
 **Why .NET 8.0 was required**:
-1. netstandard2.0 doesn't populate `runtimeTargets` in deps.json → native DLLs not deployed
-2. netstandard2.0 lacks `NativeLibrary.SetDllImportResolver` → can't customize library search
+1. netstandard2.0 doesn't populate `runtimeTargets` in deps.json ΓåÆ native DLLs not deployed
+2. netstandard2.0 lacks `NativeLibrary.SetDllImportResolver` ΓåÆ can't customize library search
 3. .NET 8.0 aligns with PowerShell 7.4 LTS lifecycle
 
 **Key findings from native library investigation (March 2026)**:
@@ -670,22 +689,30 @@ Three complementary approaches to fix native library resolution for the PowerShe
 - Only `pwsh.deps.json` is read at startup; module loading is handled by `CorePsAssemblyLoadContext`
 - PowerShell's `NativeDllHandler` expects flat `{rid}/{libraryName}` layout, not NuGet's `runtimes/{rid}/native/`
 - Build script restructures NuGet output into PowerShell-compatible layout after `dotnet publish`
-- The NuGet `runtimes/` convention has existed since 2016; PowerShell's flat convention since 2018 — they were never aligned
+- The NuGet `runtimes/` convention has existed since 2016; PowerShell's flat convention since 2018 ΓÇö they were never aligned
 
 **Key decisions from history recall investigation (April 2026)**:
-- **Problem**: Same command stored multiple times in `ExecutionHistory` (once per location) — caused duplicates in recall. Migrated entries with `Location = "Unknown"` were invisible to location recall.
+- **Problem**: Same command stored multiple times in `ExecutionHistory` (once per location) ΓÇö caused duplicates in recall. Migrated entries with `Location = "Unknown"` were invisible to location recall.
 - **Up/Down Arrow** (`HistoryRecall`): Pure chronological, DB-side dedup via `ROW_NUMBER()`. In-memory dedup governed by `HistoryNoDuplicates` option.
-- **Alt+Up/Down Arrow** (`LocationHistoryRecall`): Builds pre-sorted weighted index on first press — frequency DESC, then recency DESC. Only includes commands matching current `$PWD`. "Unknown" location entries are excluded by design.
+- **Alt+Up/Down Arrow** (`LocationHistoryRecall`): Builds pre-sorted weighted index on first press — **per-location** frequency DESC (via `GetLocationExecutionCounts`), then recency DESC. Only includes commands matching current `$PWD`. "Unknown" location entries are excluded by design.
 - **Alt+Delete** (`RemoveFromHistory`): Default binding in Windows & Emacs modes. Removes the currently recalled history entry from in-memory history and SQLite. Advances to next older item after deletion. Also works in F2 list view. Previously bound to `KillWord` (still available via `Alt+D` / `Ctrl+Delete`). Must increment `_recallHistoryCommandCount`/`_anyHistoryCommandCount` to prevent main loop reset.
-- **F2 List View Stats Tooltip**: Custom colored renderer in SQLite mode. Format: `❯❯ ⟳ Runs N  │  ⏱ Last Xh ago  │  📂 Dir path`. Icons + short labels for accessibility. Cannot embed VT sequences in tooltip text (char-by-char renderer treats `\x1b` as control char), so `RenderHistoryStatsTooltip` writes directly to buffer. `HistoryItemRef` on `SuggestionEntry` provides the data. Icons use dim-only style (italic makes emoji lean). Labels use dim+italic. Values use accent color.
-  - **C# 9 gotcha**: `SuggestionEntry` is a struct with `LangVersion 9.0`. `readonly` fields assigned in constructor body after `: this(...)` chaining silently don't take effect. The `HistoryItemRef` constructor must set all fields directly — no chaining.
-- **ExecutionCount = Total (SUM)**: `ExecutionCount` on `HistoryItem` is always the sum across all locations. All three SQL read paths (`ReadSQLiteHistory`, `ReadHistorySQLiteIncrementally`, `WriteHistoryToSQLite` read-back) use `SUM(ExecutionCount)`. Per-location count was confusing ("Runs: 1" for `cd ..` used 47× from different dirs).
-- **F2 List Ordering** (design decided, not yet implemented): Top half = current-dir commands by frecency, bottom half = global by frecency, with backfill. Plugins-active (3 slots) = just frecency, no split.
-- **Alt+Up VS Code Collision**: VS Code intercepts Alt+Up in integrated terminal for selection mode — `LocationHistoryRecall` is unreachable. Works in Windows Terminal/iTerm2/standalone pwsh. May need secondary binding or documentation.
+- **F2 List View Stats Tooltip**: Custom colored renderer in SQLite mode. Format: `Γ¥»Γ¥» Γƒ│ Runs N  Γöé  ΓÅ▒ Last Xh ago  Γöé  ≡ƒôé Dir path`. Icons + short labels for accessibility. Cannot embed VT sequences in tooltip text (char-by-char renderer treats `\x1b` as control char), so `RenderHistoryStatsTooltip` writes directly to buffer. `HistoryItemRef` on `SuggestionEntry` provides the data. Icons use dim-only style (italic makes emoji lean). Labels use dim+italic. Values use accent color.
+  - **C# 9 gotcha**: `SuggestionEntry` is a struct with `LangVersion 9.0`. `readonly` fields assigned in constructor body after `: this(...)` chaining silently don't take effect. The `HistoryItemRef` constructor must set all fields directly ΓÇö no chaining.
+- **ExecutionCount = Total (SUM) for display**: `ExecutionCount` on `HistoryItem` is always the sum across all locations. All three SQL read paths (`ReadSQLiteHistory`, `ReadHistorySQLiteIncrementally`, `WriteHistoryToSQLite` read-back) use `SUM(ExecutionCount)`. Tooltip "Runs N" shows this total. **But local sorting uses per-location counts** via `GetLocationExecutionCounts()` — a command run once here but 100× elsewhere shouldn't dominate local rankings.
+- **F2 List Ordering** (implemented): Top half = current-dir commands by per-location frecency, bottom half = global by total frecency, with backfill. Plugins-active (3 slots) = just total frecency, no split.
+- **Alt+Up VS Code Collision**: VS Code intercepts Alt+Up in integrated terminal for selection mode ΓÇö `LocationHistoryRecall` is unreachable. Works in Windows Terminal/iTerm2/standalone pwsh. May need secondary binding or documentation.
 - **Timestamps**: Stored as Unix seconds (`ToUnixTimeSeconds()`), read with `FromUnixTimeSeconds()`. Do NOT use .NET ticks conversion in ad-hoc SQL queries.
 - **Migration timestamps**: Assigned post-collection with oldest text line = earliest time, all before UtcNow. Items loaded from DB must have `_saved = true` to prevent re-write with UtcNow.
 
-**Developer Note**: Always use `./build.ps1` to get the correct module layout. Manual `dotnet build` output will have native DLLs in `runtimes/` which PowerShell cannot find.
+**Developer Note**: Always use `./build.ps1` to get the correct module layout. Manual `dotnet build` output will have native DLLs in `runtimes/` which PowerShell cannot find. If changes aren't taking effect after rebuild, use `./build.ps1 -Clean` then rebuild ΓÇö incremental builds can leave stale DLLs in `publish/` and the installed module folder. Also, PowerShell caches loaded assemblies in-process ΓÇö you must **restart all pwsh sessions** after deploying a new DLL.
+
+**Verification**: After loading a new build, confirm the expected methods exist:
+```powershell
+# Example: verify GetLocationExecutionCounts is present
+[Microsoft.PowerShell.PSConsoleReadLine].GetMethods(
+    [System.Reflection.BindingFlags]'NonPublic, Instance'
+) | Where-Object { $_.Name -match 'Location' } | ForEach-Object { "$($_.Name)($($_.GetParameters().Count) params)" }
+```
 
 ---
 
